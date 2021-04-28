@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
@@ -24,12 +25,34 @@ namespace RabbitMqAsyncPublisher
             _model = model;
             _queueName = queueName;
 
-            // TODO: _model.BasicNacks event should be listened as well
             _model.BasicAcks += OnBasicAcks;
+            // TODO: Return "false" when message was nacked
+            _model.BasicNacks += (sender, args) => { Console.WriteLine(" >> Model:BasicNacks"); };
+            _model.BasicRecoverOk += (sender, args) => { Console.WriteLine(" >> Model:BasicRecoveryOk"); };
+            _model.ModelShutdown += (sender, args) =>
+            {
+                lock (_publishSyncRoot)
+                lock (_ackSyncRoot)
+                {
+                    while (_queue.TryDequeue(out var seqno))
+                    {
+                        if (_sources.TryRemove(seqno, out var source))
+                        {
+                            source.TrySetException(new AlreadyClosedException(args));
+                        }
+                    }
+                }
+
+                Console.WriteLine(" >> Model:ModelShutdown");
+            };
+            ((IRecoverable) _model).Recovery += (sender, args) => { Console.WriteLine(" >> Model:Recovery"); };
         }
 
         private void OnBasicAcks(object sender, BasicAckEventArgs args)
         {
+            Console.WriteLine(" >> Model:BasicAcks");
+            Console.WriteLine($"deliveryTag = {args.DeliveryTag}");
+
             lock (_ackSyncRoot)
             {
                 if (args.Multiple)
@@ -69,13 +92,20 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public Task PublishAsync(ReadOnlyMemory<byte> message)
+        /// <summary>
+        /// </summary>
+        /// <param name="message"></param>
+        /// <returns>True id acked, False is nacked</returns>
+        /// <exception cref="AlreadyClosedException">When model is already closed</exception>
+        public Task<bool> PublishAsync(ReadOnlyMemory<byte> message)
         {
             lock (_publishSyncRoot)
             {
                 var taskCompletionSource = new TaskCompletionSource<bool>();
                 var seqNo = _model.NextPublishSeqNo;
+                Console.WriteLine($"seqno = {seqNo}");
 
+                Console.WriteLine($"_source.Count = {_sources.Count}; _queue.Count = {_queue.Count}");
                 _sources[seqNo] = taskCompletionSource;
                 _queue.Enqueue(seqNo);
 

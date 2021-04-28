@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
@@ -20,6 +21,53 @@ namespace RabbitMqAsyncPublisher
         private static int _counter;
 
         public static void Main()
+        {
+            ThreadPool.SetMaxThreads(100, 100);
+            ThreadPool.SetMinThreads(100, 100);
+
+            using (var connection = new ConnectionFactory {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true}.CreateConnection())
+            using (var model = connection.CreateModel())
+            {
+                connection.ConnectionShutdown += (sender, args) =>
+                {
+                    Console.WriteLine(" >> Connection:ConnectionShutdown");
+                };
+                ((IAutorecoveringConnection)connection).RecoverySucceeded += (sender, args) =>
+                {
+                    Console.WriteLine(" >> Connection:RecoverySucceeded");
+                };
+                ((IAutorecoveringConnection)connection).ConnectionRecoveryError += (sender, args) =>
+                {
+                    Console.WriteLine(" >> Connection:ConnectionRecoveryError");
+                };
+                
+                model.ConfirmSelect();
+                model.QueueDeclare(QueueName, true, false, false);
+
+                var publisher = new AsyncPublisher(model, QueueName);
+
+                for (var i = 0; i < 1000; i++)
+                {
+                    try
+                    {
+                        Console.WriteLine($" >> Publising#{i} ...");
+                        publisher.PublishAsync(Encoding.UTF8.GetBytes(Utils.GenerateString(1024))).Wait();
+                        Console.WriteLine($" >> Published#{i}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($" >> Failed#{i} => {ex.GetType().Name}");
+                    }
+
+                    Thread.Sleep(5000);
+                }
+
+                model.Close();
+                connection.Close();
+            }
+        }
+
+        public static void Main2()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);

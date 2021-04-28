@@ -20,7 +20,7 @@ namespace RabbitMqAsyncPublisher
             return messages;
         }
 
-        private static string GenerateString(int length)
+        public static string GenerateString(int length)
         {
             const string chars = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM";
             var builder = new StringBuilder(length);
