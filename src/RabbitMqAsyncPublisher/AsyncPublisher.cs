@@ -27,8 +27,8 @@ namespace RabbitMqAsyncPublisher
 
             _model.BasicAcks += OnBasicAcks;
             // TODO: Return "false" when message was nacked
-            _model.BasicNacks += (sender, args) => { Console.WriteLine(" >> Model:BasicNacks"); };
-            _model.BasicRecoverOk += (sender, args) => { Console.WriteLine(" >> Model:BasicRecoveryOk"); };
+            // _model.BasicNacks += (sender, args) => { Console.WriteLine(" >> Model:BasicNacks"); };
+            // _model.BasicRecoverOk += (sender, args) => { Console.WriteLine(" >> Model:BasicRecoveryOk"); };
             _model.ModelShutdown += (sender, args) =>
             {
                 lock (_publishSyncRoot)
@@ -43,15 +43,15 @@ namespace RabbitMqAsyncPublisher
                     }
                 }
 
-                Console.WriteLine(" >> Model:ModelShutdown");
+                // Console.WriteLine(" >> Model:ModelShutdown");
             };
-            ((IRecoverable) _model).Recovery += (sender, args) => { Console.WriteLine(" >> Model:Recovery"); };
+            // ((IRecoverable) _model).Recovery += (sender, args) => { Console.WriteLine(" >> Model:Recovery"); };
         }
 
         private void OnBasicAcks(object sender, BasicAckEventArgs args)
         {
-            Console.WriteLine(" >> Model:BasicAcks");
-            Console.WriteLine($"deliveryTag = {args.DeliveryTag}");
+            // Console.WriteLine(" >> Model:BasicAcks");
+            // Console.WriteLine($"deliveryTag = {args.DeliveryTag}");
 
             lock (_ackSyncRoot)
             {
@@ -103,9 +103,9 @@ namespace RabbitMqAsyncPublisher
             {
                 var taskCompletionSource = new TaskCompletionSource<bool>();
                 var seqNo = _model.NextPublishSeqNo;
-                Console.WriteLine($"seqno = {seqNo}");
+                // Console.WriteLine($"seqno = {seqNo}");
 
-                Console.WriteLine($"_source.Count = {_sources.Count}; _queue.Count = {_queue.Count}");
+                // Console.WriteLine($"_source.Count = {_sources.Count}; _queue.Count = {_queue.Count}");
                 _sources[seqNo] = taskCompletionSource;
                 _queue.Enqueue(seqNo);
 

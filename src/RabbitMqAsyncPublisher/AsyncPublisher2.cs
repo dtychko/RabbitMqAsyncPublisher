@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -7,28 +9,84 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
+    public class AsyncPublisher2Decorator
+    {
+        private readonly AsyncPublisher2 _decorated;
+
+        public AsyncPublisher2Decorator(AsyncPublisher2 decorated)
+        {
+            _decorated = decorated;
+        }
+
+        public async Task PublishAsync(ReadOnlyMemory<byte> message)
+        {
+            Task<bool> result;
+
+            // Publish lock
+            lock (_decorated)
+            {
+                do
+                {
+                    try
+                    {
+                        // ClosedState should always throw
+                        result = _decorated.PublishAsync(message);
+                        break;
+                    }
+                    catch
+                    {
+                        Thread.Sleep(1000);
+                    }
+                } while (true);
+            }
+
+            do
+            {
+                try
+                {
+                    await result;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // Move to closed state
+
+                    // Retry lock
+                    lock (result)
+                    {
+                        result = _decorated.PublishAsync(message);
+                    }
+                }
+            } while (true);
+        }
+    }
+
+    /// <summary>
+    /// Limitations:
+    /// 1. Doesn't listen to "IModel.BasicReturn" event, as results doesn't handle "returned" messages
+    /// </summary>
     public class AsyncPublisher2 : IAsyncPublisherStateContext, IDisposable
     {
-        private readonly IModel _model;
-        private readonly string _queueName;
-
+        private readonly object _stateSyncRoot = new object();
         private IAsyncPublisherState _state;
+        private int _disposed;
+
+        public IModel Model { get; }
+
+        public string QueueName { get; }
 
         public AsyncPublisher2(IModel model, string queueName)
         {
-            _model = model;
-            _queueName = queueName;
+            Model = model;
+            QueueName = queueName;
 
-            _state = new AsyncPublisherReadyState(this);
+            _state = new AsyncPublisherOpenState(this);
 
-            // TODO: Think about _model.BasicRecoverOk event
-            // TODO: Think about _model.BasicReturn event
+            Model.BasicAcks += OnBasicAcks;
+            Model.BasicNacks += OnBasicNacks;
+            Model.ModelShutdown += OnModelShutdown;
 
-            _model.BasicAcks += OnBasicAcks;
-            _model.BasicNacks += OnBasicNacks;
-            _model.ModelShutdown += OnModelShutdown;
-
-            if (_model is IRecoverable recoverableModel)
+            if (Model is IRecoverable recoverableModel)
             {
                 recoverableModel.Recovery += OnRecovery;
             }
@@ -36,46 +94,67 @@ namespace RabbitMqAsyncPublisher
 
         private void OnBasicAcks(object sender, BasicAckEventArgs args)
         {
-            _state.Ack(args.DeliveryTag, args.Multiple);
+            SyncStateAccess(state => state.Ack(args.DeliveryTag, args.Multiple));
         }
 
         private void OnBasicNacks(object sender, BasicNackEventArgs args)
         {
-            _state.Nack(args.DeliveryTag, args.Multiple);
+            SyncStateAccess(state => state.Nack(args.DeliveryTag, args.Multiple));
         }
 
         private void OnModelShutdown(object sender, ShutdownEventArgs args)
         {
-            _state.Shutdown(args);
+            SyncStateAccess(state => state.Shutdown(args));
         }
 
         private void OnRecovery(object sender, EventArgs args)
         {
-            _state.Recovery();
+            SyncStateAccess(state => state.Recovery());
         }
 
         public Task<bool> PublishAsync(ReadOnlyMemory<byte> message)
         {
-            return _state.PublishAsync(message);
+            return SyncStateAccess(state => state.PublishAsync(message));
         }
 
         public void Dispose()
         {
-            _state.Dispose();
+            var disposer = Interlocked.Exchange(ref _disposed, 1) != 0;
 
-            _model.BasicAcks -= OnBasicAcks;
-            _model.BasicNacks -= OnBasicNacks;
-            _model.ModelShutdown -= OnModelShutdown;
+            // Make sure that after calling "Dispose" method publisher is always moved to "Disposed" state,
+            // even if the current call wasn't chosen to be "disposer".
+            SyncStateAccess(state => state.Dispose());
 
-            if (_model is IRecoverable recoverableModel)
+            if (!disposer)
+            {
+                return;
+            }
+
+            Model.BasicAcks -= OnBasicAcks;
+            Model.BasicNacks -= OnBasicNacks;
+            Model.ModelShutdown -= OnModelShutdown;
+
+            if (Model is IRecoverable recoverableModel)
             {
                 recoverableModel.Recovery -= OnRecovery;
             }
         }
 
-        IModel IAsyncPublisherStateContext.Model => _model;
+        private void SyncStateAccess(Action<IAsyncPublisherState> access)
+        {
+            lock (_stateSyncRoot)
+            {
+                access(_state);
+            }
+        }
 
-        string IAsyncPublisherStateContext.QueueName => _queueName;
+        private TResult SyncStateAccess<TResult>(Func<IAsyncPublisherState, TResult> access)
+        {
+            lock (_stateSyncRoot)
+            {
+                return access(_state);
+            }
+        }
 
         void IAsyncPublisherStateContext.SetState(IAsyncPublisherState state)
         {
@@ -107,102 +186,34 @@ namespace RabbitMqAsyncPublisher
         void Dispose();
     }
 
-    internal class AsyncPublisherReadyState : IAsyncPublisherState
+    internal class AsyncPublisherTaskCompletionSourceRegistry
     {
-        private readonly IAsyncPublisherStateContext _context;
-
         private readonly ConcurrentDictionary<ulong, TaskCompletionSource<bool>> _sources =
             new ConcurrentDictionary<ulong, TaskCompletionSource<bool>>();
 
         private readonly ConcurrentQueue<ulong> _queue = new ConcurrentQueue<ulong>();
 
-        private readonly object _ackSyncRoot = new object();
-        private readonly object _publishSyncRoot = new object();
-
-        public AsyncPublisherReadyState(IAsyncPublisherStateContext context)
+        public TaskCompletionSource<bool> Add(ulong seqNo)
         {
-            _context = context;
+            var taskCompletionSource = new TaskCompletionSource<bool>();
+
+            _sources[seqNo] = taskCompletionSource;
+            _queue.Enqueue(seqNo);
+
+            return taskCompletionSource;
         }
 
-        public Task<bool> PublishAsync(ReadOnlyMemory<byte> message)
-        {
-            lock (_publishSyncRoot)
-            {
-                var taskCompletionSource = new TaskCompletionSource<bool>();
-                var seqNo = _context.Model.NextPublishSeqNo;
-                Console.WriteLine($"seqno = {seqNo}");
-
-                Console.WriteLine($"_source.Count = {_sources.Count}; _queue.Count = {_queue.Count}");
-                _sources[seqNo] = taskCompletionSource;
-                _queue.Enqueue(seqNo);
-
-                _context.Model.BasicPublish("", _context.QueueName, _context.Model.CreateBasicProperties(), message);
-
-                return taskCompletionSource.Task;
-            }
-        }
-
-        public void Ack(ulong deliveryTag, bool multiple)
-        {
-            lock (_ackSyncRoot)
-            {
-                if (multiple)
-                {
-                    AckMultiple(deliveryTag);
-                }
-                else
-                {
-                    Ack(deliveryTag);
-                }
-            }
-        }
-
-        public void Nack(ulong deliveryTag, bool multiple)
-        {
-            throw new NotImplementedException();
-        }
-
-        public void Shutdown(ShutdownEventArgs args)
-        {
-            lock (_publishSyncRoot)
-            lock (_ackSyncRoot)
-            {
-                while (_queue.TryDequeue(out var seqno))
-                {
-                    if (_sources.TryRemove(seqno, out var source))
-                    {
-                        source.TrySetException(new AlreadyClosedException(args));
-                    }
-                }
-            }
-
-            _context.SetState(new AsyncPublisherShutdownState(_context, args));
-        }
-
-        public void Recovery()
-        {
-            throw new NotImplementedException();
-        }
-
-        public void Dispose()
-        {
-            throw new NotImplementedException();
-        }
-
-        private void Ack(ulong deliveryTag)
+        public TaskCompletionSource<bool> Get(ulong deliveryTag)
         {
             if (_queue.TryPeek(out var seqNo) && seqNo == deliveryTag)
             {
                 _queue.TryDequeue(out _);
             }
 
-            if (_sources.TryRemove(seqNo, out var source))
-            {
-                source.SetResult(true);
-            }
+            return _sources.TryRemove(seqNo, out var source) ? source : null;
         }
 
-        private void AckMultiple(ulong deliveryTag)
+        public IEnumerable<TaskCompletionSource<bool>> GetAllUpTo(ulong deliveryTag)
         {
             while (_queue.TryPeek(out var seqNo) && seqNo <= deliveryTag)
             {
@@ -210,18 +221,160 @@ namespace RabbitMqAsyncPublisher
 
                 if (_sources.TryRemove(seqNo, out var source))
                 {
-                    source.SetResult(true);
+                    yield return source;
+                }
+            }
+        }
+
+        public IEnumerable<TaskCompletionSource<bool>> GetAll()
+        {
+            while (_queue.TryDequeue(out var seqNo))
+            {
+                if (_sources.TryRemove(seqNo, out var source))
+                {
+                    yield return source;
                 }
             }
         }
     }
 
-    internal class AsyncPublisherShutdownState : IAsyncPublisherState
+    internal class AsyncPublisherTaskCompletionSourceRegistry2
+    {
+        private readonly Dictionary<ulong, SourceEntry> _sources = new Dictionary<ulong, SourceEntry>();
+        private readonly LinkedList<ulong> _deliveryTagQueue = new LinkedList<ulong>();
+
+        public TaskCompletionSource<bool> Add(ulong deliveryTag)
+        {
+            var taskCompletionSource = new TaskCompletionSource<bool>();
+
+            _sources[deliveryTag] = new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag));
+
+            return taskCompletionSource;
+        }
+
+        public TaskCompletionSource<bool> Get(ulong deliveryTag)
+        {
+            if (_sources.TryGetValue(deliveryTag, out var entry))
+            {
+                _sources.Remove(deliveryTag);
+                _deliveryTagQueue.Remove(entry.QueueNode);
+                return entry.Source;
+            }
+
+            return null;
+        }
+
+        public IEnumerable<TaskCompletionSource<bool>> GetAllUpTo(ulong deliveryTag)
+        {
+            while (_deliveryTagQueue.Count > 0 && _deliveryTagQueue.First.Value <= deliveryTag)
+            {
+                if (_sources.TryGetValue(_deliveryTagQueue.First.Value, out var entry))
+                {
+                    _sources.Remove(_deliveryTagQueue.First.Value);
+                    yield return entry.Source;
+                }
+
+                _deliveryTagQueue.RemoveFirst();
+            }
+        }
+
+        public IEnumerable<TaskCompletionSource<bool>> GetAll()
+        {
+            return GetAllUpTo(ulong.MaxValue);
+        }
+
+        private readonly struct SourceEntry
+        {
+            public TaskCompletionSource<bool> Source { get; }
+
+            public LinkedListNode<ulong> QueueNode { get; }
+
+            public SourceEntry(TaskCompletionSource<bool> source, LinkedListNode<ulong> queueNode)
+            {
+                Source = source;
+                QueueNode = queueNode;
+            }
+        }
+    }
+
+    internal class AsyncPublisherOpenState : IAsyncPublisherState
+    {
+        private readonly AsyncPublisherTaskCompletionSourceRegistry2 _completionSourceRegistry =
+            new AsyncPublisherTaskCompletionSourceRegistry2();
+
+        private readonly IAsyncPublisherStateContext _context;
+
+        public AsyncPublisherOpenState(IAsyncPublisherStateContext context)
+        {
+            _context = context;
+        }
+
+        public Task<bool> PublishAsync(ReadOnlyMemory<byte> message)
+        {
+            var seqNo = _context.Model.NextPublishSeqNo;
+
+            _context.Model.BasicPublish("", _context.QueueName, _context.Model.CreateBasicProperties(), message);
+
+            return _completionSourceRegistry.Add(seqNo).Task;
+        }
+
+        public void Ack(ulong deliveryTag, bool multiple)
+        {
+            ProcessDeliveryTag(deliveryTag, multiple, true);
+        }
+
+        public void Nack(ulong deliveryTag, bool multiple)
+        {
+            ProcessDeliveryTag(deliveryTag, multiple, false);
+        }
+
+        public void Shutdown(ShutdownEventArgs args)
+        {
+            foreach (var source in _completionSourceRegistry.GetAll())
+            {
+                source.TrySetException(new AlreadyClosedException(args));
+            }
+
+            _context.SetState(new AsyncPublisherClosedState(_context, args));
+        }
+
+        public void Recovery()
+        {
+            // TODO: Make sure that Recovery method couldn't be executed for "Open" state 
+            // TODO: Perhaps log unexpected command
+        }
+
+        public void Dispose()
+        {
+            foreach (var source in _completionSourceRegistry.GetAll())
+            {
+                source.TrySetException(new ObjectDisposedException("Publisher was disposed"));
+            }
+
+            _context.SetState(new AsyncPublisherDisposedState());
+        }
+
+        private void ProcessDeliveryTag(ulong deliveryTag, bool multiple, bool ack)
+        {
+            if (!multiple)
+            {
+                _completionSourceRegistry.Get(deliveryTag)?.SetResult(ack);
+                return;
+            }
+
+            foreach (var source in _completionSourceRegistry.GetAllUpTo(deliveryTag))
+            {
+                source.SetResult(ack);
+            }
+        }
+    }
+
+    internal class AsyncPublisherClosedState : IAsyncPublisherState
     {
         private readonly IAsyncPublisherStateContext _context;
         private readonly ShutdownEventArgs _args;
 
-        public AsyncPublisherShutdownState(IAsyncPublisherStateContext context, ShutdownEventArgs args)
+        public AsyncPublisherClosedState(IAsyncPublisherStateContext context, ShutdownEventArgs args)
         {
             _context = context;
             _args = args;
@@ -234,57 +387,55 @@ namespace RabbitMqAsyncPublisher
 
         public void Ack(ulong deliveryTag, bool multiple)
         {
+            // TODO: Log unexpected command
         }
 
         public void Nack(ulong deliveryTag, bool multiple)
         {
+            // TODO: Log unexpected command
         }
 
         public void Shutdown(ShutdownEventArgs args)
         {
+            // TODO: Log unexpected command
         }
 
         public void Recovery()
         {
-            _context.SetState(new AsyncPublisherReadyState(_context));
+            _context.SetState(new AsyncPublisherOpenState(_context));
         }
 
         public void Dispose()
         {
-            throw new NotImplementedException();
+            _context.SetState(new AsyncPublisherDisposedState());
         }
     }
 
-    internal class AsyncPublisherDisposeState : IAsyncPublisherState
+    internal class AsyncPublisherDisposedState : IAsyncPublisherState
     {
         public Task<bool> PublishAsync(ReadOnlyMemory<byte> message)
         {
-            throw new ObjectDisposedException("Publisher disposed");
+            throw new ObjectDisposedException("Publisher was disposed");
         }
 
         public void Ack(ulong deliveryTag, bool multiple)
         {
-            throw new ObjectDisposedException("Publisher disposed");
         }
 
         public void Nack(ulong deliveryTag, bool multiple)
         {
-            throw new ObjectDisposedException("Publisher disposed");
         }
 
         public void Shutdown(ShutdownEventArgs args)
         {
-            throw new ObjectDisposedException("Publisher disposed");
         }
 
         public void Recovery()
         {
-            throw new ObjectDisposedException("Publisher disposed");
         }
 
         public void Dispose()
         {
-            throw new ObjectDisposedException("Publisher disposed");
         }
     }
 }

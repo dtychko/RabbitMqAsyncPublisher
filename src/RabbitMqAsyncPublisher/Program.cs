@@ -44,7 +44,7 @@ namespace RabbitMqAsyncPublisher
                 model.ConfirmSelect();
                 model.QueueDeclare(QueueName, true, false, false);
 
-                var publisher = new AsyncPublisher(model, QueueName);
+                var publisher = new AsyncPublisher2(model, QueueName);
 
                 for (var i = 0; i < 1000; i++)
                 {
@@ -83,6 +83,7 @@ namespace RabbitMqAsyncPublisher
             {
                 model.ConfirmSelect();
                 model.QueueDeclare(QueueName, true, false, false);
+                model.QueuePurge(QueueName);
 
                 StartRateMeasurement();
 
@@ -114,7 +115,7 @@ namespace RabbitMqAsyncPublisher
             Queue<ReadOnlyMemory<byte>> messages,
             int nonAcknowledgedSizeLimit)
         {
-            var publisher = new AsyncPublisher(model, QueueName);
+            var publisher = new AsyncPublisher2(model, QueueName);
             var tasks = new List<Task>();
             var manualResetEvent = new ManualResetEventSlim(true);
             var nonAcknowledgedSize = 0;
