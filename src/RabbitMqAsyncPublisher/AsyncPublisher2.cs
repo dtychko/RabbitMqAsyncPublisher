@@ -9,58 +9,6 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    public class AsyncPublisher2Decorator
-    {
-        private readonly AsyncPublisher2 _decorated;
-
-        public AsyncPublisher2Decorator(AsyncPublisher2 decorated)
-        {
-            _decorated = decorated;
-        }
-
-        public async Task PublishAsync(ReadOnlyMemory<byte> message)
-        {
-            Task<bool> result;
-
-            // Publish lock
-            lock (_decorated)
-            {
-                do
-                {
-                    try
-                    {
-                        // ClosedState should always throw
-                        result = _decorated.PublishAsync(message);
-                        break;
-                    }
-                    catch
-                    {
-                        Thread.Sleep(1000);
-                    }
-                } while (true);
-            }
-
-            do
-            {
-                try
-                {
-                    await result;
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    // Move to closed state
-
-                    // Retry lock
-                    lock (result)
-                    {
-                        result = _decorated.PublishAsync(message);
-                    }
-                }
-            } while (true);
-        }
-    }
-
     /// <summary>
     /// Limitations:
     /// 1. Doesn't listen to "IModel.BasicReturn" event, as results doesn't handle "returned" messages
