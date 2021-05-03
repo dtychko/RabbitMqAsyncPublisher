@@ -20,7 +20,7 @@ namespace RabbitMqAsyncPublisher
 
         private static int _counter;
 
-        public static void Main()
+        public static void Main1()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -67,7 +67,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public static void Main2()
+        public static void Main()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -115,7 +115,7 @@ namespace RabbitMqAsyncPublisher
             Queue<ReadOnlyMemory<byte>> messages,
             int nonAcknowledgedSizeLimit)
         {
-            var publisher = new AsyncPublisher2(model, QueueName);
+            var publisher = new AsyncPublisher2Decorator(new AsyncPublisher2(model, QueueName));
             var tasks = new List<Task>();
             var manualResetEvent = new ManualResetEventSlim(true);
             var nonAcknowledgedSize = 0;
