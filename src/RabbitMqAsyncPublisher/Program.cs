@@ -20,38 +20,84 @@ namespace RabbitMqAsyncPublisher
 
         private static int _counter;
 
+        public static void Main()
+        {
+            var source = new CancellationTokenSource(2000);
+            
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await Foo(source.Token);
+                }
+                catch (TaskCanceledException)
+                {
+                    Console.WriteLine("Foo cancelled");
+                }
+                catch (Exception)
+                {
+                    Console.WriteLine("Foo exception");
+                }
+
+                Console.WriteLine("Foo completed");
+            }, source.Token).Wait(source.Token);
+            
+            Console.WriteLine("Main completed");
+        }
+
+        private static async Task Foo(CancellationToken cancellationToken)
+        {
+            try
+            {
+                Console.WriteLine("Starting ...");
+                await Task.Delay(3000, cancellationToken);
+                Console.WriteLine("Throwing ...");
+                throw new Exception();
+            }
+            catch (Exception)
+            {
+                Console.WriteLine("Exception processing ...");
+                await Task.Delay(3000, cancellationToken);
+                Console.WriteLine("Exception processed");
+            }
+            finally
+            {
+                Console.WriteLine("Finally");
+            }
+        }
+        
         public static void Main1()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
 
-            using (var connection = new ConnectionFactory {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true}.CreateConnection())
+            using (var connection = new ConnectionFactory {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true}
+                .CreateConnection())
             using (var model = connection.CreateModel())
             {
-                connection.ConnectionShutdown += (sender, args) =>
-                {
-                    Console.WriteLine(" >> Connection:ConnectionShutdown");
-                };
-                ((IAutorecoveringConnection)connection).RecoverySucceeded += (sender, args) =>
-                {
+                connection.ConnectionShutdown +=
+                    (sender, args) => Console.WriteLine(" >> Connection:ConnectionShutdown");
+                ((IAutorecoveringConnection) connection).RecoverySucceeded += (sender, args) =>
                     Console.WriteLine(" >> Connection:RecoverySucceeded");
-                };
-                ((IAutorecoveringConnection)connection).ConnectionRecoveryError += (sender, args) =>
-                {
+                ((IAutorecoveringConnection) connection).ConnectionRecoveryError += (sender, args) =>
                     Console.WriteLine(" >> Connection:ConnectionRecoveryError");
-                };
-                
-                model.ConfirmSelect();
-                model.QueueDeclare(QueueName, true, false, false);
 
-                var publisher = new AsyncPublisher2(model, QueueName);
+                model.ConfirmSelect();
+                // model.QueueDeclare(QueueName, true, false, false);
+
+                var publisher = AsyncPublisherDeclaringDecorator.Create(
+                    new AsyncPublisher(model),
+                    AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
+                );
 
                 for (var i = 0; i < 1000; i++)
                 {
                     try
                     {
                         Console.WriteLine($" >> Publising#{i} ...");
-                        publisher.PublishAsync(Encoding.UTF8.GetBytes(Utils.GenerateString(1024))).Wait();
+                        publisher.PublishAsync("", QueueName, Encoding.UTF8.GetBytes(Utils.GenerateString(1024)),
+                                CancellationToken.None)
+                            .Wait();
                         Console.WriteLine($" >> Published#{i}");
                     }
                     catch (Exception ex)
@@ -67,7 +113,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public static void Main()
+        public static void Main2()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -115,7 +161,13 @@ namespace RabbitMqAsyncPublisher
             Queue<ReadOnlyMemory<byte>> messages,
             int nonAcknowledgedSizeLimit)
         {
-            var publisher = new AsyncPublisher2Decorator(new AsyncPublisher2(model, QueueName));
+            // var publisher = new AsyncRetryingPublisher(new AsyncPublisher(model, QueueName));
+            var publisher = new AsyncPublisherAdapter<bool>(
+                AsyncPublisherDeclaringDecorator.Create(
+                    new AsyncPublisher(model),
+                    AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
+                ),
+                QueueName);
             var tasks = new List<Task>();
             var manualResetEvent = new ManualResetEventSlim(true);
             var nonAcknowledgedSize = 0;

@@ -1,5 +1,6 @@
 ﻿using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
@@ -7,112 +8,368 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    public class AsyncPublisher
+    public interface IModelAware
     {
-        private readonly IModel _model;
-        private readonly string _queueName;
+        IModel Model { get; }
+    }
 
-        private readonly ConcurrentDictionary<ulong, TaskCompletionSource<bool>> _sources =
-            new ConcurrentDictionary<ulong, TaskCompletionSource<bool>>();
+    public interface IAsyncPublisher<TResult> : IModelAware, IDisposable
+    {
+        Task<TResult> PublishAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken);
+    }
 
-        private readonly ConcurrentQueue<ulong> _queue = new ConcurrentQueue<ulong>();
+    /// <summary>
+    /// Limitations:
+    /// 1. Doesn't listen to "IModel.BasicReturn" event, as results doesn't handle "returned" messages
+    /// </summary>
+    public class AsyncPublisher : IAsyncPublisher<bool>, IAsyncPublisherStateContext
+    {
+        private readonly object _stateSyncRoot = new object();
+        private IAsyncPublisherState _state;
+        private int _disposed;
 
-        private readonly object _ackSyncRoot = new object();
-        private readonly object _publishSyncRoot = new object();
+        public IModel Model { get; }
 
-        public AsyncPublisher(IModel model, string queueName)
+        public AsyncPublisher(IModel model)
         {
-            _model = model;
-            _queueName = queueName;
+            Model = model;
 
-            _model.BasicAcks += OnBasicAcks;
-            // TODO: Return "false" when message was nacked
-            // _model.BasicNacks += (sender, args) => { Console.WriteLine(" >> Model:BasicNacks"); };
-            // _model.BasicRecoverOk += (sender, args) => { Console.WriteLine(" >> Model:BasicRecoveryOk"); };
-            _model.ModelShutdown += (sender, args) =>
+            _state = new AsyncPublisherOpenState(this);
+
+            Model.BasicAcks += OnBasicAcks;
+            Model.BasicNacks += OnBasicNacks;
+            Model.ModelShutdown += OnModelShutdown;
+
+            if (Model is IRecoverable recoverableModel)
             {
-                lock (_publishSyncRoot)
-                lock (_ackSyncRoot)
-                {
-                    while (_queue.TryDequeue(out var seqno))
-                    {
-                        if (_sources.TryRemove(seqno, out var source))
-                        {
-                            source.TrySetException(new AlreadyClosedException(args));
-                        }
-                    }
-                }
-
-                // Console.WriteLine(" >> Model:ModelShutdown");
-            };
-            // ((IRecoverable) _model).Recovery += (sender, args) => { Console.WriteLine(" >> Model:Recovery"); };
+                recoverableModel.Recovery += OnRecovery;
+            }
         }
 
         private void OnBasicAcks(object sender, BasicAckEventArgs args)
         {
-            // Console.WriteLine(" >> Model:BasicAcks");
-            // Console.WriteLine($"deliveryTag = {args.DeliveryTag}");
+            SyncStateAccess(state => state.Ack(args.DeliveryTag, args.Multiple));
+        }
 
-            lock (_ackSyncRoot)
+        private void OnBasicNacks(object sender, BasicNackEventArgs args)
+        {
+            SyncStateAccess(state => state.Nack(args.DeliveryTag, args.Multiple));
+        }
+
+        private void OnModelShutdown(object sender, ShutdownEventArgs args)
+        {
+            SyncStateAccess(state => state.Shutdown(args));
+        }
+
+        private void OnRecovery(object sender, EventArgs args)
+        {
+            SyncStateAccess(state => state.Recovery());
+        }
+
+        public Task<bool> PublishAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken)
+        {
+            // TODO: Try to publish without lock. Publish method access could be synced in decorator
+            return SyncStateAccess(state => state.PublishAsync(exchange, routingKey, body, cancellationToken));
+        }
+
+        public void Dispose()
+        {
+            var disposer = Interlocked.Exchange(ref _disposed, 1) == 0;
+
+            // Make sure that after calling "Dispose" method publisher is always moved to "Disposed" state,
+            // even if the current call wasn't chosen to be "disposer".
+            SyncStateAccess(state => state.Dispose());
+
+            if (!disposer)
             {
-                if (args.Multiple)
-                {
-                    AckMultiple(args.DeliveryTag);
-                }
-                else
-                {
-                    Ack(args.DeliveryTag);
-                }
+                return;
+            }
+
+            Model.BasicAcks -= OnBasicAcks;
+            Model.BasicNacks -= OnBasicNacks;
+            Model.ModelShutdown -= OnModelShutdown;
+
+            if (Model is IRecoverable recoverableModel)
+            {
+                recoverableModel.Recovery -= OnRecovery;
             }
         }
 
-        private void Ack(ulong deliveryTag)
+        private void SyncStateAccess(Action<IAsyncPublisherState> access)
         {
-            if (_queue.TryPeek(out var seqNo) && seqNo == deliveryTag)
+            lock (_stateSyncRoot)
             {
-                _queue.TryDequeue(out _);
-            }
-
-            if (_sources.TryRemove(seqNo, out var source))
-            {
-                source.SetResult(true);
+                access(_state);
             }
         }
 
-        private void AckMultiple(ulong deliveryTag)
+        private TResult SyncStateAccess<TResult>(Func<IAsyncPublisherState, TResult> access)
         {
-            while (_queue.TryPeek(out var seqNo) && seqNo <= deliveryTag)
+            lock (_stateSyncRoot)
             {
-                _queue.TryDequeue(out _);
+                return access(_state);
+            }
+        }
 
-                if (_sources.TryRemove(seqNo, out var source))
+        void IAsyncPublisherStateContext.SetState(IAsyncPublisherState state)
+        {
+            _state = state;
+        }
+    }
+
+    internal interface IAsyncPublisherStateContext
+    {
+        IModel Model { get; }
+
+        void SetState(IAsyncPublisherState state);
+    }
+
+    internal interface IAsyncPublisherState
+    {
+        Task<bool> PublishAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken);
+
+        void Ack(ulong deliveryTag, bool multiple);
+
+        void Nack(ulong deliveryTag, bool multiple);
+
+        void Shutdown(ShutdownEventArgs args);
+
+        void Recovery();
+
+        void Dispose();
+    }
+
+    internal class AsyncPublisherTaskRegistry
+    {
+        private readonly Dictionary<ulong, SourceEntry> _sources = new Dictionary<ulong, SourceEntry>();
+        private readonly LinkedList<ulong> _deliveryTagQueue = new LinkedList<ulong>();
+
+        public Task<bool> Register(ulong deliveryTag, CancellationToken cancellationToken)
+        {
+            var taskCompletionSource = new TaskCompletionSource<bool>();
+            var cancellationTokenRegistration =
+                cancellationToken.Register(() => taskCompletionSource.TrySetCanceled(cancellationToken));
+
+            // ReSharper disable once MethodSupportsCancellation
+            taskCompletionSource.Task.ContinueWith(_ => cancellationTokenRegistration.Dispose());
+
+            _sources[deliveryTag] = new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag));
+
+            return taskCompletionSource.Task;
+        }
+
+        public void SetResult(ulong deliveryTag, bool result)
+        {
+            if (_sources.TryGetValue(deliveryTag, out var entry))
+            {
+                _sources.Remove(deliveryTag);
+                _deliveryTagQueue.Remove(entry.QueueNode);
+                entry.Source.TrySetResult(result);
+            }
+        }
+
+        public void SetResultForAllUpTo(ulong deliveryTag, bool result)
+        {
+            foreach (var source in GetAllUpTo(deliveryTag))
+            {
+                source.TrySetResult(result);
+            }
+        }
+
+        public void SetExceptionForAll(Exception exception)
+        {
+            foreach (var source in GetAllUpTo(ulong.MaxValue))
+            {
+                source.TrySetException(exception);
+            }
+        }
+
+        private IEnumerable<TaskCompletionSource<bool>> GetAllUpTo(ulong deliveryTag)
+        {
+            while (_deliveryTagQueue.Count > 0 && _deliveryTagQueue.First.Value <= deliveryTag)
+            {
+                if (_sources.TryGetValue(_deliveryTagQueue.First.Value, out var entry))
                 {
-                    source.SetResult(true);
+                    _sources.Remove(_deliveryTagQueue.First.Value);
+                    yield return entry.Source;
                 }
+
+                _deliveryTagQueue.RemoveFirst();
             }
         }
 
-        /// <summary>
-        /// </summary>
-        /// <param name="message"></param>
-        /// <returns>True id acked, False is nacked</returns>
-        /// <exception cref="AlreadyClosedException">When model is already closed</exception>
-        public Task<bool> PublishAsync(ReadOnlyMemory<byte> message)
+        private readonly struct SourceEntry
         {
-            lock (_publishSyncRoot)
+            public TaskCompletionSource<bool> Source { get; }
+
+            public LinkedListNode<ulong> QueueNode { get; }
+
+            public SourceEntry(TaskCompletionSource<bool> source, LinkedListNode<ulong> queueNode)
             {
-                var taskCompletionSource = new TaskCompletionSource<bool>();
-                var seqNo = _model.NextPublishSeqNo;
-                // Console.WriteLine($"seqno = {seqNo}");
-
-                // Console.WriteLine($"_source.Count = {_sources.Count}; _queue.Count = {_queue.Count}");
-                _sources[seqNo] = taskCompletionSource;
-                _queue.Enqueue(seqNo);
-
-                _model.BasicPublish("", _queueName, _model.CreateBasicProperties(), message);
-
-                return taskCompletionSource.Task;
+                Source = source;
+                QueueNode = queueNode;
             }
+        }
+    }
+
+    internal class AsyncPublisherOpenState : IAsyncPublisherState
+    {
+        private readonly AsyncPublisherTaskRegistry _taskRegistry = new AsyncPublisherTaskRegistry();
+        private readonly IAsyncPublisherStateContext _context;
+
+        public AsyncPublisherOpenState(IAsyncPublisherStateContext context)
+        {
+            _context = context;
+        }
+
+        public Task<bool> PublishAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken)
+        {
+            var seqNo = _context.Model.NextPublishSeqNo;
+            cancellationToken.ThrowIfCancellationRequested();
+            _context.Model.BasicPublish(exchange, routingKey, _context.Model.CreateBasicProperties(), body);
+
+            return _taskRegistry.Register(seqNo, cancellationToken);
+        }
+
+        public void Ack(ulong deliveryTag, bool multiple)
+        {
+            ProcessDeliveryTag(deliveryTag, multiple, true);
+        }
+
+        public void Nack(ulong deliveryTag, bool multiple)
+        {
+            ProcessDeliveryTag(deliveryTag, multiple, false);
+        }
+
+        public void Shutdown(ShutdownEventArgs args)
+        {
+            _taskRegistry.SetExceptionForAll(new AlreadyClosedException(args));
+            _context.SetState(new AsyncPublisherClosedState(_context, args));
+        }
+
+        public void Recovery()
+        {
+            // TODO: Make sure that Recovery method couldn't be executed for "Open" state 
+            // TODO: Perhaps log unexpected command
+        }
+
+        public void Dispose()
+        {
+            _taskRegistry.SetExceptionForAll(new ObjectDisposedException("Publisher was disposed"));
+            _context.SetState(new AsyncPublisherDisposedState());
+        }
+
+        private void ProcessDeliveryTag(ulong deliveryTag, bool multiple, bool ack)
+        {
+            if (!multiple)
+            {
+                _taskRegistry.SetResult(deliveryTag, ack);
+                return;
+            }
+
+            _taskRegistry.SetResultForAllUpTo(deliveryTag, ack);
+        }
+    }
+
+    internal class AsyncPublisherClosedState : IAsyncPublisherState
+    {
+        private readonly IAsyncPublisherStateContext _context;
+        private readonly ShutdownEventArgs _args;
+
+        public AsyncPublisherClosedState(IAsyncPublisherStateContext context, ShutdownEventArgs args)
+        {
+            _context = context;
+            _args = args;
+        }
+
+        public Task<bool> PublishAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            throw new AlreadyClosedException(_args);
+        }
+
+        public void Ack(ulong deliveryTag, bool multiple)
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Nack(ulong deliveryTag, bool multiple)
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Shutdown(ShutdownEventArgs args)
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Recovery()
+        {
+            _context.SetState(new AsyncPublisherOpenState(_context));
+        }
+
+        public void Dispose()
+        {
+            _context.SetState(new AsyncPublisherDisposedState());
+        }
+    }
+
+    internal class AsyncPublisherDisposedState : IAsyncPublisherState
+    {
+        public Task<bool> PublishAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            throw new ObjectDisposedException("Publisher was disposed");
+        }
+
+        public void Ack(ulong deliveryTag, bool multiple)
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Nack(ulong deliveryTag, bool multiple)
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Shutdown(ShutdownEventArgs args)
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Recovery()
+        {
+            // TODO: Log unexpected command
+        }
+
+        public void Dispose()
+        {
         }
     }
 }
