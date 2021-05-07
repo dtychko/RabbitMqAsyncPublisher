@@ -13,59 +13,13 @@ namespace RabbitMqAsyncPublisher
         private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
         private const string QueueName = "test_queue";
 
-        private const int MessageCount = 100_000;
-        private const int MessageSize = 1024 * 1;
+        private const int MessageCount = 100;
+        private const int MessageSize = 1024 * 10000;
 
-        private const int NonAcknowledgedSizeLimit = 10_000_000;
+        private const int NonAcknowledgedSizeLimit = 50;
 
         private static int _counter;
 
-        public static void Main()
-        {
-            var source = new CancellationTokenSource(2000);
-            
-            Task.Run(async () =>
-            {
-                try
-                {
-                    await Foo(source.Token);
-                }
-                catch (TaskCanceledException)
-                {
-                    Console.WriteLine("Foo cancelled");
-                }
-                catch (Exception)
-                {
-                    Console.WriteLine("Foo exception");
-                }
-
-                Console.WriteLine("Foo completed");
-            }, source.Token).Wait(source.Token);
-            
-            Console.WriteLine("Main completed");
-        }
-
-        private static async Task Foo(CancellationToken cancellationToken)
-        {
-            try
-            {
-                Console.WriteLine("Starting ...");
-                await Task.Delay(3000, cancellationToken);
-                Console.WriteLine("Throwing ...");
-                throw new Exception();
-            }
-            catch (Exception)
-            {
-                Console.WriteLine("Exception processing ...");
-                await Task.Delay(3000, cancellationToken);
-                Console.WriteLine("Exception processed");
-            }
-            finally
-            {
-                Console.WriteLine("Finally");
-            }
-        }
-        
         public static void Main1()
         {
             ThreadPool.SetMaxThreads(100, 100);
@@ -113,7 +67,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public static void Main2()
+        public static void Main()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -128,8 +82,18 @@ namespace RabbitMqAsyncPublisher
             using (var model = connection.CreateModel())
             {
                 model.ConfirmSelect();
-                model.QueueDeclare(QueueName, true, false, false);
-                model.QueuePurge(QueueName);
+                
+                model.ExchangeDeclare("test_exchange", "topic", true, false);
+                for (var i = 0; i < 14; i++)
+                {
+                    var queueName = $"test_queue_{i}";
+                    model.QueueDeclare(queueName, true, false, false);
+                    model.QueuePurge(queueName);
+                    model.QueueBind(queueName, "test_exchange", "#");
+                }
+                
+                // model.QueueDeclare(QueueName, true, false, false);
+                // model.QueuePurge(QueueName);
 
                 StartRateMeasurement();
 
@@ -163,11 +127,15 @@ namespace RabbitMqAsyncPublisher
         {
             // var publisher = new AsyncRetryingPublisher(new AsyncPublisher(model, QueueName));
             var publisher = new AsyncPublisherAdapter<bool>(
-                AsyncPublisherDeclaringDecorator.Create(
-                    new AsyncPublisher(model),
-                    AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
+                new AsyncPublisherSyncDecorator<bool>(
+                    AsyncPublisherDeclaringDecorator.Create(
+                        new AsyncPublisher(model),
+                        AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
+                    )
                 ),
-                QueueName);
+                "test_exchange",
+                "some topic"
+            );
             var tasks = new List<Task>();
             var manualResetEvent = new ManualResetEventSlim(true);
             var nonAcknowledgedSize = 0;

@@ -18,16 +18,15 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class AsyncRetryingPublisher : IAsyncPublisher<RetryingPublisherResult>
+    public class AsyncPublisherWithRetries : IAsyncPublisher<RetryingPublisherResult>
     {
         private readonly AsyncPublisher _decorated;
         private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
-        private readonly SemaphoreSlim _publishSemaphore = new SemaphoreSlim(1, 1);
         private readonly ManualResetEventSlim _canPublish = new ManualResetEventSlim(true);
 
         public IModel Model => _decorated.Model;
 
-        public AsyncRetryingPublisher(AsyncPublisher decorated)
+        public AsyncPublisherWithRetries(AsyncPublisher decorated)
         {
             _decorated = decorated;
         }
@@ -38,56 +37,31 @@ namespace RabbitMqAsyncPublisher
             ReadOnlyMemory<byte> body,
             CancellationToken cancellationToken)
         {
-            // TODO: Think about moving "publish lock" to outer decorator
-            await _publishSemaphore.WaitAsync(cancellationToken);
             _canPublish.Wait(cancellationToken);
 
             // TODO: Think about replacing "QueueEntry" with "TCS"
             var queueNode = AddLastSynced(new QueueEntry());
-            Task<bool> publishTask = null;
 
             try
             {
-                publishTask = _decorated.PublishAsync(exchange, routingKey, body, cancellationToken);
-                _publishSemaphore.Release();
-
                 // TODO: Treat "false" results as an exception
-                await publishTask;
-
-                return RetryingPublisherResult.NoReties;
+                await _decorated.PublishAsync(exchange, routingKey, body, cancellationToken);
             }
             catch (OperationCanceledException)
             {
-                // ? Move to "finally"
-                if (publishTask is null)
-                {
-                    _publishSemaphore.Release();
-                }
-
                 // Should rethrow?
                 throw;
             }
             catch (Exception)
             {
+                // TODO: Use callback to determine if publish should be retried
                 _canPublish.Reset();
-                if (publishTask is null)
-                {
-                    _publishSemaphore.Release();
-                }
-
                 var retries = await RetryAsync(queueNode, exchange, routingKey, body, cancellationToken);
                 return new RetryingPublisherResult(retries);
             }
-            finally
-            {
-                var queueCount = RemoveSynced(queueNode);
-                queueNode.Value.CompletionSource.TrySetResult(true);
 
-                if (queueCount == 0)
-                {
-                    _canPublish.Set();
-                }
-            }
+            RemoveSynced(queueNode);
+            return RetryingPublisherResult.NoReties;
         }
 
         private async Task<int> RetryAsync(
@@ -111,12 +85,20 @@ namespace RabbitMqAsyncPublisher
 
             while (true)
             {
+                retries += 1;
+
                 try
                 {
-                    retries += 1;
-
                     // TODO: Treat "false" results as an exception
                     await _decorated.PublishAsync(exchange, routingKey, body, cancellationToken);
+
+                    var queueCount = RemoveSynced(queueNode);
+                    queueNode.Value.CompletionSource.TrySetResult(true);
+
+                    if (queueCount == 0)
+                    {
+                        _canPublish.Set();
+                    }
 
                     return retries;
                 }

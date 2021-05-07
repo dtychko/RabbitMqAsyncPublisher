@@ -11,17 +11,19 @@ namespace RabbitMqAsyncPublisher
     public class AsyncPublisherAdapter<TResult>
     {
         private readonly IAsyncPublisher<TResult> _publisher;
+        private readonly string _exchange;
         private readonly string _queueName;
 
-        public AsyncPublisherAdapter(IAsyncPublisher<TResult> publisher, string queueName)
+        public AsyncPublisherAdapter(IAsyncPublisher<TResult> publisher, string exchange, string queueName)
         {
             _publisher = publisher;
+            _exchange = exchange;
             _queueName = queueName;
         }
 
         public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message)
         {
-            return _publisher.PublishAsync("", _queueName, message, CancellationToken.None);
+            return _publisher.PublishAsync(_exchange, _queueName, message, CancellationToken.None);
         }
     }
 

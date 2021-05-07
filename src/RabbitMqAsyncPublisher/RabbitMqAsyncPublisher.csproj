@@ -73,7 +73,7 @@
         <Compile Include="AsyncPublisherPrototype.cs" />
         <Compile Include="AsyncPublisher.cs" />
         <Compile Include="AsyncPublisherSyncDecorator.cs" />
-        <Compile Include="AsyncRetryingPublisher.cs" />
+        <Compile Include="AsyncPublisherWithRetries.cs" />
         <Compile Include="Program.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />
         <Compile Include="SyncPublisher.cs" />
