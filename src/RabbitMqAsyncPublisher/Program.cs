@@ -8,6 +8,51 @@ using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
+    public class Example
+    {
+        public static async Task Main()
+        {
+            ThreadPool.SetMinThreads(10, 10);
+            ThreadPool.SetMaxThreads(10, 10);
+            
+            var cts = new CancellationTokenSource(2000);
+            var ct = cts.Token;
+
+            var task = Task.Run(() =>
+            {
+                Console.WriteLine("Running ...");
+                
+                while (true)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+            }, ct).ContinueWith(_ =>
+            {
+                Console.WriteLine($"Running continuation ({_.Status}) ...");
+            }, ct);
+
+            try
+            {
+                await Task.WhenAll(task, Task.FromException(new Exception()));
+                // Console.WriteLine(t.Status);
+                // Console.WriteLine(t.Id);
+            }
+            catch (OperationCanceledException ex)
+            {
+                Console.WriteLine("CANCELLED {0}", ex);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("UNEXPECTED ERROR  {0}", ex);
+            }
+            finally
+            {
+                Console.WriteLine(task.Status);
+                cts.Dispose();
+            }
+        }
+    }
+
     internal class Program
     {
         private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
@@ -49,7 +94,13 @@ namespace RabbitMqAsyncPublisher
                     try
                     {
                         Console.WriteLine($" >> Publising#{i} ...");
-                        publisher.PublishAsync("", QueueName, Encoding.UTF8.GetBytes(Utils.GenerateString(1024)),
+                        var properties = model.CreateBasicProperties();
+                        properties.Persistent = true;
+                        publisher.PublishAsync(
+                                "",
+                                QueueName,
+                                Encoding.UTF8.GetBytes(Utils.GenerateString(1024)),
+                                properties,
                                 CancellationToken.None)
                             .Wait();
                         Console.WriteLine($" >> Published#{i}");
@@ -67,7 +118,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public static void Main()
+        public static void Main2()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -82,7 +133,7 @@ namespace RabbitMqAsyncPublisher
             using (var model = connection.CreateModel())
             {
                 model.ConfirmSelect();
-                
+
                 model.ExchangeDeclare("test_exchange", "topic", true, false);
                 for (var i = 0; i < 14; i++)
                 {
@@ -91,7 +142,7 @@ namespace RabbitMqAsyncPublisher
                     model.QueuePurge(queueName);
                     model.QueueBind(queueName, "test_exchange", "#");
                 }
-                
+
                 // model.QueueDeclare(QueueName, true, false, false);
                 // model.QueuePurge(QueueName);
 
@@ -115,7 +166,9 @@ namespace RabbitMqAsyncPublisher
 
             while (messages.Count > 0)
             {
-                publisher.Publish(messages.Dequeue());
+                var properties = model.CreateBasicProperties();
+                properties.Persistent = true;
+                publisher.Publish(messages.Dequeue(), properties);
                 Interlocked.Increment(ref _counter);
             }
         }
@@ -150,9 +203,12 @@ namespace RabbitMqAsyncPublisher
                     manualResetEvent.Reset();
                 }
 
-                tasks.Add(publisher.PublishAsync(message).ContinueWith(_ =>
+                var properties = model.CreateBasicProperties();
+                properties.Persistent = true;
+                tasks.Add(publisher.PublishAsync(message, properties).ContinueWith(_ =>
                 {
-                    if (Interlocked.Add(ref nonAcknowledgedSize, -message.Length) < nonAcknowledgedSizeLimit / 2)
+                    if (Interlocked.Add(ref nonAcknowledgedSize, -message.Length) <
+                        Math.Max(1, nonAcknowledgedSizeLimit / 2))
                     {
                         manualResetEvent.Set();
                     }

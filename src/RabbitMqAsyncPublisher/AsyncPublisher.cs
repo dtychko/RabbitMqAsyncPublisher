@@ -19,6 +19,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken);
     }
 
@@ -36,6 +37,14 @@ namespace RabbitMqAsyncPublisher
 
         public AsyncPublisher(IModel model)
         {
+            // Heuristic based on reverse engineering of "RabbitMQ.Client" lib
+            // that helps to make sure that "ConfirmSelect" method was called on the model
+            // to enable confirm mode.
+            if (model.NextPublishSeqNo == 0)
+            {
+                throw new ArgumentException("Channel should be in confirm mode.");
+            }
+
             Model = model;
 
             _state = new AsyncPublisherOpenState(this);
@@ -74,10 +83,12 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             // TODO: Try to publish without lock. Publish method access could be synced in decorator
-            return SyncStateAccess(state => state.PublishAsync(exchange, routingKey, body, cancellationToken));
+            return SyncStateAccess(state =>
+                state.PublishAsync(exchange, routingKey, body, properties, cancellationToken));
         }
 
         public void Dispose()
@@ -138,6 +149,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken);
 
         void Ack(ulong deliveryTag, bool multiple);
@@ -238,11 +250,12 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             var seqNo = _context.Model.NextPublishSeqNo;
             cancellationToken.ThrowIfCancellationRequested();
-            _context.Model.BasicPublish(exchange, routingKey, _context.Model.CreateBasicProperties(), body);
+            _context.Model.BasicPublish(exchange, routingKey, properties, body);
 
             return _taskRegistry.Register(seqNo, cancellationToken);
         }
@@ -302,6 +315,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -341,6 +355,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();

@@ -35,6 +35,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             _canPublish.Wait(cancellationToken);
@@ -45,7 +46,7 @@ namespace RabbitMqAsyncPublisher
             try
             {
                 // TODO: Treat "false" results as an exception
-                await _decorated.PublishAsync(exchange, routingKey, body, cancellationToken);
+                await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -56,7 +57,7 @@ namespace RabbitMqAsyncPublisher
             {
                 // TODO: Use callback to determine if publish should be retried
                 _canPublish.Reset();
-                var retries = await RetryAsync(queueNode, exchange, routingKey, body, cancellationToken);
+                var retries = await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken);
                 return new RetryingPublisherResult(retries);
             }
 
@@ -69,6 +70,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             LinkedListNode<QueueEntry> nextQueueNode;
@@ -90,7 +92,7 @@ namespace RabbitMqAsyncPublisher
                 try
                 {
                     // TODO: Treat "false" results as an exception
-                    await _decorated.PublishAsync(exchange, routingKey, body, cancellationToken);
+                    await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
 
                     var queueCount = RemoveSynced(queueNode);
                     queueNode.Value.CompletionSource.TrySetResult(true);

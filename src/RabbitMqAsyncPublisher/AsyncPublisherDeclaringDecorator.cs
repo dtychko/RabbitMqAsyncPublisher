@@ -51,6 +51,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             lock (_syncRoot)
@@ -61,7 +62,7 @@ namespace RabbitMqAsyncPublisher
                     _isDeclared = true;
                 }
 
-                return _decorated.PublishAsync(exchange, routingKey, body, cancellationToken);
+                return _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
             }
         }
 

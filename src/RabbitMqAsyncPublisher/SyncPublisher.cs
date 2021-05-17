@@ -12,9 +12,9 @@ namespace RabbitMqAsyncPublisher
             _model = model;
         }
 
-        public void Publish(ReadOnlyMemory<byte> message)
+        public void Publish(ReadOnlyMemory<byte> message, IBasicProperties properties)
         {
-            _model.BasicPublish("", "test_queue", _model.CreateBasicProperties(), message);
+            _model.BasicPublish("", "test_queue", properties, message);
             _model.WaitForConfirms();
         }
     }

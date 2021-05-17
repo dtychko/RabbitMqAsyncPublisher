@@ -21,9 +21,9 @@ namespace RabbitMqAsyncPublisher
             _queueName = queueName;
         }
 
-        public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message)
+        public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, IBasicProperties properties)
         {
-            return _publisher.PublishAsync(_exchange, _queueName, message, CancellationToken.None);
+            return _publisher.PublishAsync(_exchange, _queueName, message, properties, CancellationToken.None);
         }
     }
 
