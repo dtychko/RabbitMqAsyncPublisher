@@ -50,9 +50,12 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException)
             {
-                // Should rethrow?
+                RemoveSynced(queueNode);
+                queueNode.Value.CompletionSource.TrySetResult(true);
+
                 throw;
             }
+            // TODO: handle only RabbitMq.Client related exceptions
             catch (Exception)
             {
                 // TODO: Use callback to determine if publish should be retried
@@ -62,6 +65,8 @@ namespace RabbitMqAsyncPublisher
             }
 
             RemoveSynced(queueNode);
+            queueNode.Value.CompletionSource.TrySetResult(true);
+
             return RetryingPublisherResult.NoReties;
         }
 
@@ -108,6 +113,7 @@ namespace RabbitMqAsyncPublisher
                 {
                     throw;
                 }
+                // TODO: handle only RabbitMq.Client related exceptions
                 catch (Exception)
                 {
                     await Task.Delay(1000, cancellationToken);

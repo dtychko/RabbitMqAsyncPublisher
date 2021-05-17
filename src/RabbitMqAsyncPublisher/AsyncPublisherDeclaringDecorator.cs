@@ -24,7 +24,7 @@ namespace RabbitMqAsyncPublisher
     {
         private readonly IAsyncPublisher<TResult> _decorated;
         private readonly Action<IModel> _declare;
-        private readonly object _syncRoot = new object();
+        private readonly ILogger _logger;
         private int _disposed;
 
         // Could be accessed concurrently, so should be marked as "volatile"
@@ -32,10 +32,21 @@ namespace RabbitMqAsyncPublisher
 
         public IModel Model => _decorated.Model;
 
-        public AsyncPublisherDeclaringDecorator(IAsyncPublisher<TResult> decorated, Action<IModel> declare)
+        public AsyncPublisherDeclaringDecorator(
+            IAsyncPublisher<TResult> decorated,
+            Action<IModel> declare)
+            : this(decorated, declare, EmptyLogger.Instance)
+        {
+        }
+
+        public AsyncPublisherDeclaringDecorator(
+            IAsyncPublisher<TResult> decorated,
+            Action<IModel> declare,
+            ILogger logger)
         {
             _decorated = decorated;
             _declare = declare;
+            _logger = logger;
 
             Model.ModelShutdown += OnModelShutdown;
         }
@@ -45,6 +56,12 @@ namespace RabbitMqAsyncPublisher
             // Current connection is closed.
             // Reset "_isDeclared" flag to make sure that everything is redeclared when connection is restored. 
             _isDeclared = false;
+
+            _logger.Info(
+                "{0} received event '{1}'. Required RabbitMQ resources will be redeclared before publishing next message.",
+                GetType().Name,
+                nameof(IModel.ModelShutdown)
+            );
         }
 
         public Task<TResult> PublishAsync(
@@ -54,26 +71,53 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            lock (_syncRoot)
-            {
-                if (!_isDeclared)
-                {
-                    _declare(Model);
-                    _isDeclared = true;
-                }
+            cancellationToken.ThrowIfCancellationRequested();
 
-                return _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+            if (!_isDeclared)
+            {
+                DeclareUnsafe();
+                _isDeclared = true;
+            }
+
+            return _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+        }
+
+        private void DeclareUnsafe()
+        {
+            try
+            {
+                _logger.Info(
+                    "{0} declaring required RabbitMQ resources ...",
+                    GetType().Name
+                );
+
+                _declare(Model);
+
+                _logger.Info(
+                    "{0} completed declaration of required RabbitMQ resources.",
+                    GetType().Name
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(
+                    "{0} couldn't complete declaration of required RabbitMQ resources because of unexpected error.",
+                    ex,
+                    GetType().Name
+                );
+
+                throw;
             }
         }
 
         public void Dispose()
         {
+            _decorated.Dispose();
+
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 Model.ModelShutdown -= OnModelShutdown;
             }
-
-            _decorated.Dispose();
         }
     }
 }
