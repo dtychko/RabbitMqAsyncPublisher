@@ -23,7 +23,7 @@ namespace RabbitMqAsyncPublisher
 
         public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, IBasicProperties properties)
         {
-            return _publisher.PublishAsync(_exchange, _queueName, message, properties, CancellationToken.None);
+            return _publisher.PublishUnsafeAsync(_exchange, _queueName, message, properties, CancellationToken.None);
         }
     }
 

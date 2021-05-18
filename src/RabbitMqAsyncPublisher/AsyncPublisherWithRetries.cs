@@ -31,7 +31,7 @@ namespace RabbitMqAsyncPublisher
             _decorated = decorated;
         }
 
-        public async Task<RetryingPublisherResult> PublishAsync(
+        public async Task<RetryingPublisherResult> PublishUnsafeAsync(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
@@ -46,7 +46,7 @@ namespace RabbitMqAsyncPublisher
             try
             {
                 // TODO: Treat "false" results as an exception
-                await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+                await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -97,7 +97,7 @@ namespace RabbitMqAsyncPublisher
                 try
                 {
                     // TODO: Treat "false" results as an exception
-                    await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+                    await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
 
                     var queueCount = RemoveSynced(queueNode);
                     queueNode.Value.CompletionSource.TrySetResult(true);

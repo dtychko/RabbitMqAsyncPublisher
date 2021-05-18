@@ -17,7 +17,7 @@ namespace RabbitMqAsyncPublisher
             _decorated = decorated;
         }
 
-        public Task<TResult> PublishAsync(
+        public Task<TResult> PublishUnsafeAsync(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
@@ -28,7 +28,7 @@ namespace RabbitMqAsyncPublisher
 
             lock (_publishSyncRoot)
             {
-                return _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+                return _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
             }
         }
 

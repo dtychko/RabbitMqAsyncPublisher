@@ -64,7 +64,7 @@ namespace RabbitMqAsyncPublisher
             );
         }
 
-        public Task<TResult> PublishAsync(
+        public Task<TResult> PublishUnsafeAsync(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
@@ -79,7 +79,7 @@ namespace RabbitMqAsyncPublisher
                 _isDeclared = true;
             }
 
-            return _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+            return _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
         }
 
         private void DeclareUnsafe()
