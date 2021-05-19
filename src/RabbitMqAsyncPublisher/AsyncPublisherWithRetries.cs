@@ -3,24 +3,13 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    public readonly struct RetryingPublisherResult
-    {
-        public static readonly RetryingPublisherResult NoRetries = new RetryingPublisherResult(0);
-
-        public int Retries { get; }
-
-        public RetryingPublisherResult(int retries)
-        {
-            Retries = retries;
-        }
-    }
-
     public class AsyncPublisherWithRetries : IAsyncPublisher<RetryingPublisherResult>
     {
-        private readonly AsyncPublisher _decorated;
+        private readonly IAsyncPublisher<bool> _decorated;
         private readonly TimeSpan _retryDelay;
         private volatile bool _isDisposed;
         private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
@@ -28,7 +17,7 @@ namespace RabbitMqAsyncPublisher
 
         public IModel Model => _decorated.Model;
 
-        public AsyncPublisherWithRetries(AsyncPublisher decorated, TimeSpan retryDelay)
+        public AsyncPublisherWithRetries(IAsyncPublisher<bool> decorated, TimeSpan retryDelay)
         {
             _decorated = decorated;
             _retryDelay = retryDelay;
@@ -41,41 +30,41 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            _canPublish.Wait(cancellationToken);
             ThrowIfDisposed();
 
-            // TODO: Think about replacing "QueueEntry" with "TCS"
-            var queueNode = AddLastSynced(new QueueEntry());
+            _canPublish.Wait(cancellationToken);
 
-            try
+            using (StartPublishing(out var queueNode))
             {
-                // TODO: Treat "false" results as an exception
-                await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                RemoveSynced(queueNode);
-                queueNode.Value.CompletionSource.TrySetResult(true);
+                if (await TryPublishAsync(1, exchange, routingKey, body, properties, cancellationToken))
+                {
+                    return RetryingPublisherResult.NoRetries;
+                }
 
-                throw;
-            }
-            // TODO: handle only RabbitMq.Client related exceptions
-            catch (Exception ex)
-            {
-                Console.WriteLine($"WithRetries: caught exception {ex}");
-                // TODO: Use callback to determine if publish should be retried
                 _canPublish.Reset();
-                var retries = await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken);
-                return new RetryingPublisherResult(retries);
+                return await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken);
             }
-
-            RemoveSynced(queueNode);
-            queueNode.Value.CompletionSource.TrySetResult(true);
-
-            return RetryingPublisherResult.NoRetries;
         }
 
-        private async Task<int> RetryAsync(
+        private IDisposable StartPublishing(out LinkedListNode<QueueEntry> queueNode)
+        {
+            var addedQueueNode = AddLastSynced(new QueueEntry());
+            queueNode = addedQueueNode;
+
+            return new Disposable(() =>
+            {
+                RemoveSynced(addedQueueNode, () =>
+                {
+                    if (!_canPublish.IsSet)
+                    {
+                        _canPublish.Set();
+                    }
+                });
+                addedQueueNode.Value.CompletionSource.TrySetResult(true);
+            });
+        }
+
+        private async Task<RetryingPublisherResult> RetryAsync(
             LinkedListNode<QueueEntry> queueNode,
             string exchange,
             string routingKey,
@@ -85,61 +74,45 @@ namespace RabbitMqAsyncPublisher
         {
             LinkedListNode<QueueEntry> nextQueueNode;
 
-            // TODO: catch cancellation and remove queueNode and set result
             while ((nextQueueNode = GetFirstSynced()) != queueNode)
             {
+                ThrowIfDisposed();
+
                 await Task.WhenAny(
                     Task.Delay(-1, cancellationToken),
                     nextQueueNode.Value.CompletionSource.Task
                 );
             }
 
-            var retries = 0;
-
-            while (true)
+            for (var attempt = 2;; attempt++)
             {
-                retries += 1;
+                ThrowIfDisposed();
 
-                try
+                await Task.Delay(_retryDelay, cancellationToken);
+
+                if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, cancellationToken))
                 {
-                    // TODO: Treat "false" results as an exception
-                    await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
-
-                    var queueCount = RemoveSynced(queueNode);
-                    queueNode.Value.CompletionSource.TrySetResult(true);
-
-                    if (queueCount == 0)
-                    {
-                        _canPublish.Set();
-                    }
-
-                    return retries;
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                // TODO: handle only RabbitMq.Client related exceptions
-                catch (Exception)
-                {
-                    await Task.Delay(_retryDelay, cancellationToken);
+                    return new RetryingPublisherResult(attempt - 1);
                 }
             }
         }
 
-        public void Dispose()
+        private async Task<bool> TryPublishAsync(
+            int attempt,
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
+            CancellationToken cancellationToken)
         {
-            _isDisposed = true;
-            _decorated.Dispose();
-            _canPublish.Dispose();
-            _canPublish.Set();
-        }
-
-        private void ThrowIfDisposed()
-        {
-            if (_isDisposed)
+            try
             {
-                throw new ObjectDisposedException(nameof(AsyncPublisherWithRetries));
+                return await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
+            }
+            catch (AlreadyClosedException)
+            {
+                // TODO: Use callback to determine if publish should be retried
+                return false;
             }
         }
 
@@ -159,18 +132,51 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private int RemoveSynced(LinkedListNode<QueueEntry> node)
+        private void RemoveSynced(LinkedListNode<QueueEntry> node, Action onEmpty)
         {
             lock (_queue)
             {
                 _queue.Remove(node);
-                return _queue.Count;
+
+                if (_queue.Count == 0)
+                {
+                    onEmpty();
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            _decorated.Dispose();
+            _isDisposed = true;
+
+            _canPublish.Dispose();
+            _canPublish.Set();
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(AsyncPublisherWithRetries));
             }
         }
 
         private class QueueEntry
         {
             public TaskCompletionSource<bool> CompletionSource { get; } = new TaskCompletionSource<bool>();
+        }
+    }
+
+    public readonly struct RetryingPublisherResult
+    {
+        public static readonly RetryingPublisherResult NoRetries = new RetryingPublisherResult(0);
+
+        public int Retries { get; }
+
+        public RetryingPublisherResult(int retries)
+        {
+            Retries = retries;
         }
     }
 }

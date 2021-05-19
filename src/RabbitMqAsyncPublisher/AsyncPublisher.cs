@@ -115,7 +115,7 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            var args = new PublishUnsafeArgs(exchange, routingKey, body, properties);
+            var args = new PublishUnsafeArgs(exchange, routingKey, body, properties, Model.NextPublishSeqNo);
             _diagnostics.TrackPublishUnsafe(args);
             var stopwatch = Stopwatch.StartNew();
 

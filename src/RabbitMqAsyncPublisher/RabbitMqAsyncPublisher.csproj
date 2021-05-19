@@ -70,6 +70,7 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="AsyncPublisherDeclaringDecorator.cs" />
+        <Compile Include="AsyncPublisherDiagnostics.cs" />
         <Compile Include="AsyncPublisherPrototype.cs" />
         <Compile Include="AsyncPublisher.cs" />
         <Compile Include="AsyncPublisherSyncDecorator.cs" />

@@ -5,6 +5,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 using RabbitMqAsyncPublisher;
 
 namespace Tests
@@ -24,7 +26,10 @@ namespace Tests
             
             var model = new TestRabbitModel(request =>
             {
-                if (Interlocked.Increment(ref counter) % 100 == 0) throw new Exception("Reject me");
+                if (Interlocked.Increment(ref counter) % 100 == 0)
+                {
+                    throw new AlreadyClosedException(new ShutdownEventArgs(ShutdownInitiator.Peer, 0, String.Empty));
+                }
 
                 async Task<bool> Run()
                 {
