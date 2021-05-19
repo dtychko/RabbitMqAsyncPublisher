@@ -8,7 +8,7 @@ namespace RabbitMqAsyncPublisher
 {
     public readonly struct RetryingPublisherResult
     {
-        public static readonly RetryingPublisherResult NoReties = new RetryingPublisherResult(0);
+        public static readonly RetryingPublisherResult NoRetries = new RetryingPublisherResult(0);
 
         public int Retries { get; }
 
@@ -21,14 +21,17 @@ namespace RabbitMqAsyncPublisher
     public class AsyncPublisherWithRetries : IAsyncPublisher<RetryingPublisherResult>
     {
         private readonly AsyncPublisher _decorated;
+        private readonly TimeSpan _retryDelay;
+        private volatile bool _isDisposed;
         private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
         private readonly ManualResetEventSlim _canPublish = new ManualResetEventSlim(true);
 
         public IModel Model => _decorated.Model;
 
-        public AsyncPublisherWithRetries(AsyncPublisher decorated)
+        public AsyncPublisherWithRetries(AsyncPublisher decorated, TimeSpan retryDelay)
         {
             _decorated = decorated;
+            _retryDelay = retryDelay;
         }
 
         public async Task<RetryingPublisherResult> PublishUnsafeAsync(
@@ -39,6 +42,7 @@ namespace RabbitMqAsyncPublisher
             CancellationToken cancellationToken)
         {
             _canPublish.Wait(cancellationToken);
+            ThrowIfDisposed();
 
             // TODO: Think about replacing "QueueEntry" with "TCS"
             var queueNode = AddLastSynced(new QueueEntry());
@@ -56,8 +60,9 @@ namespace RabbitMqAsyncPublisher
                 throw;
             }
             // TODO: handle only RabbitMq.Client related exceptions
-            catch (Exception)
+            catch (Exception ex)
             {
+                Console.WriteLine($"WithRetries: caught exception {ex}");
                 // TODO: Use callback to determine if publish should be retried
                 _canPublish.Reset();
                 var retries = await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken);
@@ -67,7 +72,7 @@ namespace RabbitMqAsyncPublisher
             RemoveSynced(queueNode);
             queueNode.Value.CompletionSource.TrySetResult(true);
 
-            return RetryingPublisherResult.NoReties;
+            return RetryingPublisherResult.NoRetries;
         }
 
         private async Task<int> RetryAsync(
@@ -80,6 +85,7 @@ namespace RabbitMqAsyncPublisher
         {
             LinkedListNode<QueueEntry> nextQueueNode;
 
+            // TODO: catch cancellation and remove queueNode and set result
             while ((nextQueueNode = GetFirstSynced()) != queueNode)
             {
                 await Task.WhenAny(
@@ -116,15 +122,25 @@ namespace RabbitMqAsyncPublisher
                 // TODO: handle only RabbitMq.Client related exceptions
                 catch (Exception)
                 {
-                    await Task.Delay(1000, cancellationToken);
+                    await Task.Delay(_retryDelay, cancellationToken);
                 }
             }
         }
 
         public void Dispose()
         {
+            _isDisposed = true;
             _decorated.Dispose();
-            throw new NotImplementedException();
+            _canPublish.Dispose();
+            _canPublish.Set();
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_isDisposed)
+            {
+                throw new ObjectDisposedException(nameof(AsyncPublisherWithRetries));
+            }
         }
 
         private LinkedListNode<QueueEntry> AddLastSynced(QueueEntry queueEntry)

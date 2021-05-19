@@ -5,6 +5,10 @@ using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
+    /// <remarks>
+    /// RabbitMQ expects access to <see cref="IModel"/> to be mutually exclusive,
+    /// i.e. multiple publishers can't call `BasicPublish` at the same time.
+    /// </remarks>
     public class AsyncPublisherSyncDecorator<TResult> : IAsyncPublisher<TResult>
     {
         private readonly IAsyncPublisher<TResult> _decorated;

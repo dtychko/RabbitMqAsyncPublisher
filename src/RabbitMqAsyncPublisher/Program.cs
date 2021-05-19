@@ -147,7 +147,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public void TrackPublishUnsafeAcknowledged(PublishUnsafeArgs args, TimeSpan duration)
+        public void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged)
         {
         }
     }
