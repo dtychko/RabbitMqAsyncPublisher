@@ -8,6 +8,7 @@ using NUnit.Framework;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 using RabbitMqAsyncPublisher;
+using Shouldly;
 
 namespace Tests
 {
@@ -17,50 +18,80 @@ namespace Tests
         private static readonly Random _random = new Random();
 
         [Test]
-        public async Task Test1([Values(1_000)] int publishTaskCount)
+        public async Task ShouldRetryWhenBasicPublishThrowsSynchronousException(
+            [Values(1000)] int publishTaskCount,
+            [Values(100)] int failEveryNth)
         {
-            ThreadPool.SetMaxThreads(1000, 1000);
-            ThreadPool.SetMinThreads(1000, 1000);
+            ConfigureThreadPool(publishTaskCount);
 
-            var counter = 0;
-            
+            var modelPublishCount = 0;
+
             var model = new TestRabbitModel(request =>
             {
-                if (Interlocked.Increment(ref counter) % 100 == 0)
+                if (Interlocked.Increment(ref modelPublishCount) % failEveryNth == 0)
                 {
                     throw new AlreadyClosedException(new ShutdownEventArgs(ShutdownInitiator.Peer, 0, String.Empty));
                 }
 
                 async Task<bool> Run()
                 {
-                    await Task.Delay(_random.Next(0, 100));
+                    await Task.Delay(_random.Next(1, 129));
                     return true;
                 }
 
                 return Run();
             });
 
-            var cts = new CancellationTokenSource(Debugger.IsAttached
-                ? TimeSpan.FromMinutes(5)
-                : TimeSpan.FromSeconds(10));
-
-            using (var publisher =
-                new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
-                    new AsyncPublisherWithRetries(new AsyncPublisher(model), TimeSpan.FromMilliseconds(10))))
+            await RunWithTimeout(async cancellationToken =>
             {
-                var publishTasks = new ConcurrentBag<Task>();
-
-                for (var i = 0; i < publishTaskCount; i++)
+                using (var publisher =
+                    new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
+                        new AsyncPublisherWithRetries(new AsyncPublisher(model), TimeSpan.FromMilliseconds(10))))
                 {
-                    var body = Encoding.UTF8.GetBytes($"Message #{i}");
-                    publishTasks.Add(Task.Run(() => publisher.PublishUnsafeAsync(
-                        "test-exchange", "no-routing", body, new TestBasicProperties(), cts.Token), cts.Token));
+                    var publishTasks = new ConcurrentBag<Task>();
+
+                    for (var i = 0; i < publishTaskCount; i++)
+                    {
+                        var body = Encoding.UTF8.GetBytes($"Message #{i}");
+                        publishTasks.Add(Task.Run(() => publisher.PublishUnsafeAsync(
+                                "test-exchange", "no-routing", body, new TestBasicProperties(), cancellationToken),
+                            cancellationToken));
+                    }
+
+                    await Task.WhenAll(publishTasks);
+
+                    var expectedPublishCount = publishTaskCount + publishTaskCount / failEveryNth;
+                    model.PublishCalls.Count.ShouldBe(expectedPublishCount);
+                    modelPublishCount.ShouldBe(expectedPublishCount);
                 }
+            });
+        }
 
-                await Task.WhenAll(publishTasks);
+        private static void ConfigureThreadPool(int numberOfPublishers)
+        {
+            var totalThreadCount = numberOfPublishers + 10;
+            ThreadPool.SetMaxThreads(totalThreadCount, totalThreadCount);
+            ThreadPool.SetMinThreads(totalThreadCount, totalThreadCount);
+        }
 
-                Assert.AreEqual(publishTaskCount, model.PublishCalls.Count);
-                Assert.AreEqual(1010, counter);
+        private static async Task RunWithTimeout(Func<CancellationToken, Task> test)
+        {
+            using (var cts = new CancellationTokenSource(Debugger.IsAttached
+                ? TimeSpan.FromMinutes(5)
+                : TimeSpan.FromSeconds(10)))
+            {
+                var testTask = test(cts.Token);
+
+                var resultTask = await Task.WhenAny(
+                    Task.Delay(-1, cts.Token),
+                    testTask);
+
+                cts.IsCancellationRequested.ShouldBeFalse();
+
+                if (resultTask == testTask)
+                {
+                    await testTask;
+                }
             }
         }
     }
