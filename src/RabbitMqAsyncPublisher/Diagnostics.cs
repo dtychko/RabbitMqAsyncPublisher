@@ -49,8 +49,6 @@ namespace RabbitMqAsyncPublisher
 
         void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration, Exception ex);
 
-        void TrackPublishUnsafeAttemptPublished(PublishUnsafeAttemptArgs args, TimeSpan duration);
-
         void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration, bool acknowledged);
 
         void TrackCanPublishWait(PublishArgs args);
@@ -121,100 +119,96 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public void TrackBasicAcksEventProcessing(BasicAckEventArgs args)
+        public virtual void TrackBasicAcksEventProcessing(BasicAckEventArgs args)
         {
         }
 
-        public void TrackBasicAcksEventProcessingFailed(BasicAckEventArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackBasicAcksEventProcessingFailed(BasicAckEventArgs args, TimeSpan duration, Exception ex)
         {
         }
 
-        public void TrackBasicAcksEventProcessingCompleted(BasicAckEventArgs args, TimeSpan duration)
+        public virtual void TrackBasicAcksEventProcessingCompleted(BasicAckEventArgs args, TimeSpan duration)
         {
         }
 
-        public void TrackBasicNacksEventProcessing(BasicNackEventArgs args)
+        public virtual void TrackBasicNacksEventProcessing(BasicNackEventArgs args)
         {
         }
 
-        public void TrackBasicNacksEventProcessingFailed(BasicNackEventArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackBasicNacksEventProcessingFailed(BasicNackEventArgs args, TimeSpan duration, Exception ex)
         {
         }
 
-        public void TrackBasicNacksEventProcessingCompleted(BasicNackEventArgs args, TimeSpan duration)
+        public virtual void TrackBasicNacksEventProcessingCompleted(BasicNackEventArgs args, TimeSpan duration)
         {
         }
 
-        public void TrackModelShutdownEventProcessing(ShutdownEventArgs args)
+        public virtual void TrackModelShutdownEventProcessing(ShutdownEventArgs args)
         {
         }
 
-        public void TrackModelShutdownEventProcessingFailed(ShutdownEventArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackModelShutdownEventProcessingFailed(ShutdownEventArgs args, TimeSpan duration, Exception ex)
         {
         }
 
-        public void TrackModelShutdownEventProcessingCompleted(ShutdownEventArgs args, TimeSpan duration)
+        public virtual void TrackModelShutdownEventProcessingCompleted(ShutdownEventArgs args, TimeSpan duration)
         {
         }
 
-        public void TrackRecoveryEventProcessing()
+        public virtual void TrackRecoveryEventProcessing()
         {
         }
 
-        public void TrackRecoveryEventProcessingFailed(TimeSpan duration, Exception ex)
+        public virtual void TrackRecoveryEventProcessingFailed(TimeSpan duration, Exception ex)
         {
         }
 
-        public void TrackRecoveryEventProcessingCompleted(TimeSpan duration)
+        public virtual void TrackRecoveryEventProcessingCompleted(TimeSpan duration)
         {
         }
 
-        public void TrackUnsupportedSignal(string state, string signal)
+        public virtual void TrackUnsupportedSignal(string state, string signal)
         {
         }
 
-        public void TrackPublishUnsafe(PublishUnsafeArgs args)
+        public virtual void TrackPublishUnsafe(PublishUnsafeArgs args)
         {
         }
 
-        public void TrackPublishUnsafeCanceled(PublishUnsafeArgs args, TimeSpan duration)
+        public virtual void TrackPublishUnsafeCanceled(PublishUnsafeArgs args, TimeSpan duration)
         {
         }
 
-        public void TrackPublishUnsafeFailed(PublishUnsafeArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackPublishUnsafeFailed(PublishUnsafeArgs args, TimeSpan duration, Exception ex)
         {
         }
 
-        public void TrackPublishUnsafePublished(PublishUnsafeArgs args, TimeSpan duration)
+        public virtual void TrackPublishUnsafePublished(PublishUnsafeArgs args, TimeSpan duration)
         {
         }
 
-        public void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged)
+        public virtual void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged)
         {
         }
 
-        public void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
+        public virtual void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
         {
         }
 
-        public void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration, Exception ex)
         {
         }
 
-        public void TrackPublishUnsafeAttemptPublished(PublishUnsafeAttemptArgs args, TimeSpan duration)
-        {
-        }
-
-        public void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration,
+        public virtual void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration,
             bool acknowledged)
         {
         }
 
-        public void TrackCanPublishWait(PublishArgs args)
+        public virtual void TrackCanPublishWait(PublishArgs args)
         {
         }
 
-        public void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay)
+        public virtual void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay)
         {
         }
     }

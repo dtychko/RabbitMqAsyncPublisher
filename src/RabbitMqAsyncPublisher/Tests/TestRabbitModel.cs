@@ -1,13 +1,17 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using RabbitMQ.Client.Exceptions;
 
 namespace Tests
 {
     internal class TestBasicProperties : IBasicProperties
     {
+        public string TestTag { get; set; }
+        
         ushort IContentHeader.ProtocolClassId { get; }
 
         string IContentHeader.ProtocolClassName { get; }
@@ -166,7 +170,7 @@ namespace Tests
 
         string IBasicProperties.Expiration { get; set; }
 
-        IDictionary<string, object> IBasicProperties.Headers { get; set; }
+        IDictionary<string, object> IBasicProperties.Headers { get; set; } = new Dictionary<string, object>();
 
         string IBasicProperties.MessageId { get; set; }
 
@@ -204,12 +208,15 @@ namespace Tests
 
         public ulong NextPublishSeqNo { get; private set; } = 1;
 
-        public readonly List<(IBasicProperties Properties, ReadOnlyMemory<byte> Body)> PublishCalls =
-            new List<(IBasicProperties Properties, ReadOnlyMemory<byte> Body)>();
+        public readonly List<PublishRequest> PublishCalls = new List<PublishRequest>();
+
+        public readonly ConcurrentBag<PublishRequest> Acks = new ConcurrentBag<PublishRequest>();
 
         public void BasicPublish(string exchange, string routingKey, bool mandatory, IBasicProperties basicProperties,
             ReadOnlyMemory<byte> body)
         {
+            Console.WriteLine("test-model/basic-publish/starting");
+            
             PublishRequest request;
             lock (_gate)
             {
@@ -220,15 +227,28 @@ namespace Tests
                     Body = body
                 };
 
-                PublishCalls.Add((basicProperties, body));
+                PublishCalls.Add(request);
+            }
+
+            var shutdown = _currentShutdown;
+            if (shutdown != null)
+            {
+                Console.WriteLine("test-model/basic-publish/already-closed");
+                throw new AlreadyClosedException(shutdown);
             }
 
             var task = _handlePublish(request);
             task.ContinueWith(t =>
             {
+                if (_currentShutdown != null)
+                {
+                    return;
+                }
+                
                 if (t.Result)
                 {
                     FireBasicAcks(new BasicAckEventArgs {DeliveryTag = request.DeliveryTag, Multiple = false});
+                    Acks.Add(request);
                 }
                 else
                 {
@@ -236,6 +256,26 @@ namespace Tests
                         {DeliveryTag = request.DeliveryTag, Multiple = false, Requeue = false});
                 }
             });
+        }
+
+        private volatile ShutdownEventArgs _currentShutdown;
+
+        public event EventHandler<ShutdownEventArgs> ModelShutdown;
+
+        public void FireModelShutdown(ShutdownEventArgs args)
+        {
+            _currentShutdown = args;
+            Console.WriteLine("Test model moved to Shutdown state");
+            ModelShutdown?.Invoke(this, args);
+        }
+
+        public event EventHandler<EventArgs> Recovery;
+
+        public void FireRecovery(EventArgs args)
+        {
+            _currentShutdown = null;
+            Console.WriteLine("Test model moved to Recovered state");
+            Recovery?.Invoke(this, args);
         }
 
         void IDisposable.Dispose()
@@ -478,15 +518,14 @@ namespace Tests
             throw new NotImplementedException();
         }
 
-        int IModel.ChannelNumber { get; }
-
-        ShutdownEventArgs IModel.CloseReason { get; }
+        int IModel.ChannelNumber  => throw new NotImplementedException();
+        ShutdownEventArgs IModel.CloseReason => throw new NotImplementedException();
 
         IBasicConsumer IModel.DefaultConsumer { get; set; }
 
-        bool IModel.IsClosed { get; }
+        bool IModel.IsClosed => throw new NotImplementedException();
 
-        bool IModel.IsOpen { get; }
+        bool IModel.IsOpen => throw new NotImplementedException();
 
         TimeSpan IModel.ContinuationTimeout { get; set; }
 
@@ -514,12 +553,5 @@ namespace Tests
 
         public void FireFlowControl(FlowControlEventArgs args) => FlowControl?.Invoke(this, args);
 
-        public event EventHandler<ShutdownEventArgs> ModelShutdown;
-
-        public void FireModelShutdown(ShutdownEventArgs args) => ModelShutdown?.Invoke(this, args);
-
-        public event EventHandler<EventArgs> Recovery;
-
-        public void FireRecovery(EventArgs args) => Recovery?.Invoke(this, args);
     }
 }

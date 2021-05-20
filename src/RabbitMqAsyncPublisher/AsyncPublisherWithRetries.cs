@@ -135,13 +135,8 @@ namespace RabbitMqAsyncPublisher
 
             try
             {
-                var publishTask =
-                    _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
-                _diagnostics.TrackPublishUnsafeAttemptPublished(args, stopwatch.Elapsed);
-
-                var acknowledged = await publishTask;
+                var acknowledged = await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
                 _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
-
                 return acknowledged;
             }
             catch (AlreadyClosedException ex)
