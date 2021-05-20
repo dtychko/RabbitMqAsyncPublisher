@@ -9,6 +9,21 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
+    public interface IModelAware
+    {
+        IModel Model { get; }
+    }
+
+    public interface IAsyncPublisher<TResult> : IModelAware, IDisposable
+    {
+        Task<TResult> PublishUnsafeAsync(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
+            CancellationToken cancellationToken);
+    }
+
     /// <summary>
     /// Limitations:
     /// 1. Doesn't listen to "IModel.BasicReturn" event, as results doesn't handle "returned" messages

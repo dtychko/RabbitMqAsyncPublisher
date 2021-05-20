@@ -71,13 +71,10 @@
     <ItemGroup>
         <Compile Include="AsyncPublisher.cs" />
         <Compile Include="AsyncPublisherDeclaringDecorator.cs" />
-        <Compile Include="AsyncPublisherPrototype.cs" />
-        <Compile Include="AsyncPublisher0.cs" />
         <Compile Include="AsyncPublisherSyncDecorator.cs" />
         <Compile Include="AsyncPublisherWithBuffer.cs" />
         <Compile Include="AsyncPublisherWithRetries.cs" />
         <Compile Include="Diagnostics.cs" />
-        <Compile Include="Logger.cs" />
         <Compile Include="Program.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />
         <Compile Include="SyncPublisher.cs" />

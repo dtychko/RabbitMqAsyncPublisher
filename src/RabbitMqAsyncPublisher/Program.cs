@@ -77,19 +77,24 @@ namespace RabbitMqAsyncPublisher
             using (var model = connection.CreateModel())
             {
                 connection.ConnectionShutdown +=
-                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionShutdown");
+                    (sender, args) =>
+                        Console.WriteLine(
+                            $" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionShutdown");
                 ((IAutorecoveringConnection) connection).RecoverySucceeded += (sender, args) =>
                     Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:RecoverySucceeded");
                 ((IAutorecoveringConnection) connection).ConnectionRecoveryError += (sender, args) =>
-                    Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionRecoveryError");
+                    Console.WriteLine(
+                        $" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionRecoveryError");
 
                 model.BasicAcks +=
-                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:BasicAcks");
+                    (sender, args) =>
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:BasicAcks");
                 model.ModelShutdown +=
-                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown");
+                    (sender, args) =>
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown");
                 ((IRecoverable) model).Recovery +=
                     (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery");
-                
+
                 model.ConfirmSelect();
                 // model.QueueDeclare(QueueName, true, false, false);
 
@@ -241,6 +246,25 @@ namespace RabbitMqAsyncPublisher
                     Console.WriteLine($" >> Rate = {curr - prev}");
                 }
             });
+        }
+    }
+
+    public class AsyncPublisherAdapter<TResult>
+    {
+        private readonly IAsyncPublisher<TResult> _publisher;
+        private readonly string _exchange;
+        private readonly string _queueName;
+
+        public AsyncPublisherAdapter(IAsyncPublisher<TResult> publisher, string exchange, string queueName)
+        {
+            _publisher = publisher;
+            _exchange = exchange;
+            _queueName = queueName;
+        }
+
+        public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, IBasicProperties properties)
+        {
+            return _publisher.PublishUnsafeAsync(_exchange, _queueName, message, properties, CancellationToken.None);
         }
     }
 }
