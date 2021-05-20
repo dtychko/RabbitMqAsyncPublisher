@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.Remoting.Channels;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,43 +12,46 @@ namespace RabbitMqAsyncPublisher
 {
     public class Example
     {
-        public static async Task Main()
+        public static async Task Main0()
         {
             ThreadPool.SetMinThreads(10, 10);
             ThreadPool.SetMaxThreads(10, 10);
 
-            var cts = new CancellationTokenSource(2000);
-            var ct = cts.Token;
-
-            var task = Task.Run(() =>
-            {
-                Console.WriteLine("Running ...");
-
-                while (true)
+            var cancellationTokenSource = new CancellationTokenSource();
+            var cancellationToken = cancellationTokenSource.Token;
+            var cancellationTokenRegistration =
+                cancellationToken.Register(() =>
                 {
-                    ct.ThrowIfCancellationRequested();
-                }
-            }, ct).ContinueWith(_ => { Console.WriteLine($"Running continuation ({_.Status}) ..."); }, ct);
+                    Thread.Sleep(3000);
+                    Console.WriteLine("Registered callback");
+                });
 
-            try
-            {
-                await Task.WhenAll(task, Task.FromException(new Exception()));
-                // Console.WriteLine(t.Status);
-                // Console.WriteLine(t.Id);
-            }
-            catch (OperationCanceledException ex)
-            {
-                Console.WriteLine("CANCELLED {0}", ex);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("UNEXPECTED ERROR  {0}", ex);
-            }
-            finally
-            {
-                Console.WriteLine(task.Status);
-                cts.Dispose();
-            }
+            cancellationTokenSource.Cancel();
+            Console.WriteLine("Cancelled");
+
+            // var tcs = new TaskCompletionSource<bool>();
+            //
+            // var t1 = Task.Run(() =>
+            // {
+            //     Thread.Sleep(3000);
+            //
+            //     Console.WriteLine("setting result ...");
+            //     Task.Run(() => tcs.TrySetResult(true));
+            //     // tcs.TrySetResult(true);
+            //     Console.WriteLine("setting result completed");
+            // }).ContinueWith(_ => Console.WriteLine("t1 completed"));
+            //
+            // var t2 = Task.Run(async () =>
+            // {
+            //     await tcs.Task.ConfigureAwait(false);
+            //
+            //     Console.WriteLine("running continuation ...");
+            //     Thread.Sleep(3000);
+            //     // throw new Exception();
+            //     Console.WriteLine("running continuation completed");
+            // }).ContinueWith(_ => Console.WriteLine("t2 completed"));
+            //
+            // Task.WaitAll(t1, t2);
         }
     }
 
@@ -63,7 +67,7 @@ namespace RabbitMqAsyncPublisher
 
         private static int _counter;
 
-        public static void Main1()
+        public static void Main()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -73,12 +77,19 @@ namespace RabbitMqAsyncPublisher
             using (var model = connection.CreateModel())
             {
                 connection.ConnectionShutdown +=
-                    (sender, args) => Console.WriteLine(" >> Connection:ConnectionShutdown");
+                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionShutdown");
                 ((IAutorecoveringConnection) connection).RecoverySucceeded += (sender, args) =>
-                    Console.WriteLine(" >> Connection:RecoverySucceeded");
+                    Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:RecoverySucceeded");
                 ((IAutorecoveringConnection) connection).ConnectionRecoveryError += (sender, args) =>
-                    Console.WriteLine(" >> Connection:ConnectionRecoveryError");
+                    Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionRecoveryError");
 
+                model.BasicAcks +=
+                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:BasicAcks");
+                model.ModelShutdown +=
+                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown");
+                ((IRecoverable) model).Recovery +=
+                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery");
+                
                 model.ConfirmSelect();
                 // model.QueueDeclare(QueueName, true, false, false);
 
