@@ -43,7 +43,22 @@ namespace RabbitMqAsyncPublisher
         void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged);
     }
 
-    public class PublishUnsafeArgs
+    public interface IAsyncPublisherWithRetriesDiagnostics
+    {
+        void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args);
+
+        void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration, Exception ex);
+
+        void TrackPublishUnsafeAttemptPublished(PublishUnsafeAttemptArgs args, TimeSpan duration);
+
+        void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration, bool acknowledged);
+
+        void TrackCanPublishWait(PublishArgs args);
+
+        void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay);
+    }
+
+    public class PublishArgs
     {
         public string Exchange { get; }
 
@@ -53,28 +68,56 @@ namespace RabbitMqAsyncPublisher
 
         public IBasicProperties Properties { get; }
 
+        public PublishArgs(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            IBasicProperties properties)
+        {
+            Exchange = exchange;
+            RoutingKey = routingKey;
+            Body = body;
+            Properties = properties;
+        }
+    }
+
+    public class PublishUnsafeArgs : PublishArgs
+    {
         public ulong DeliveryTag { get; }
-        
+
         public PublishUnsafeArgs(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
             IBasicProperties properties,
             ulong deliveryTag)
+            : base(exchange, routingKey, body, properties)
         {
-            Exchange = exchange;
-            RoutingKey = routingKey;
-            Body = body;
-            Properties = properties;
             DeliveryTag = deliveryTag;
         }
     }
 
-    internal class EmptyDiagnostics : IAsyncPublisherDiagnostics
+    public class PublishUnsafeAttemptArgs : PublishArgs
+    {
+        public int Attempt { get; }
+
+        public PublishUnsafeAttemptArgs(
+            string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
+            IBasicProperties properties,
+            int attempt)
+            : base(exchange, routingKey, body, properties)
+        {
+            Attempt = attempt;
+        }
+    }
+
+    public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics
     {
         public static readonly EmptyDiagnostics Instance = new EmptyDiagnostics();
 
-        private EmptyDiagnostics()
+        protected EmptyDiagnostics()
         {
         }
 
@@ -147,6 +190,31 @@ namespace RabbitMqAsyncPublisher
         }
 
         public void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged)
+        {
+        }
+
+        public void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
+        {
+        }
+
+        public void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration, Exception ex)
+        {
+        }
+
+        public void TrackPublishUnsafeAttemptPublished(PublishUnsafeAttemptArgs args, TimeSpan duration)
+        {
+        }
+
+        public void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration,
+            bool acknowledged)
+        {
+        }
+
+        public void TrackCanPublishWait(PublishArgs args)
+        {
+        }
+
+        public void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay)
         {
         }
     }

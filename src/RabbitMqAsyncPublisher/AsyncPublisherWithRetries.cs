@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
@@ -11,16 +12,28 @@ namespace RabbitMqAsyncPublisher
     {
         private readonly IAsyncPublisher<bool> _decorated;
         private readonly TimeSpan _retryDelay;
+        private readonly IAsyncPublisherWithRetriesDiagnostics _diagnostics;
         private volatile bool _isDisposed;
         private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
         private readonly ManualResetEventSlim _canPublish = new ManualResetEventSlim(true);
 
         public IModel Model => _decorated.Model;
 
-        public AsyncPublisherWithRetries(IAsyncPublisher<bool> decorated, TimeSpan retryDelay)
+        public AsyncPublisherWithRetries(
+            IAsyncPublisher<bool> decorated,
+            TimeSpan retryDelay)
+            : this(decorated, retryDelay, EmptyDiagnostics.Instance)
+        {
+        }
+
+        public AsyncPublisherWithRetries(
+            IAsyncPublisher<bool> decorated,
+            TimeSpan retryDelay,
+            IAsyncPublisherWithRetriesDiagnostics diagnostics)
         {
             _decorated = decorated;
             _retryDelay = retryDelay;
+            _diagnostics = diagnostics;
         }
 
         public async Task<RetryingPublisherResult> PublishUnsafeAsync(
@@ -31,6 +44,12 @@ namespace RabbitMqAsyncPublisher
             CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
+
+            if (!_canPublish.IsSet)
+            {
+                _diagnostics.TrackCanPublishWait(new PublishArgs(exchange, routingKey, body,
+                    properties));
+            }
 
             _canPublish.Wait(cancellationToken);
 
@@ -88,6 +107,11 @@ namespace RabbitMqAsyncPublisher
             {
                 ThrowIfDisposed();
 
+                _diagnostics.TrackRetryDelay(
+                    new PublishUnsafeAttemptArgs(exchange, routingKey, body, properties, attempt),
+                    _retryDelay
+                );
+
                 await Task.Delay(_retryDelay, cancellationToken);
 
                 if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, cancellationToken))
@@ -105,14 +129,33 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
+            var args = new PublishUnsafeAttemptArgs(exchange, routingKey, body, properties, attempt);
+            _diagnostics.TrackPublishUnsafeAttempt(args);
+            var stopwatch = Stopwatch.StartNew();
+
             try
             {
-                return await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
+                var publishTask =
+                    _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
+                _diagnostics.TrackPublishUnsafeAttemptPublished(args, stopwatch.Elapsed);
+
+                var acknowledged = await publishTask;
+                _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
+
+                return acknowledged;
             }
-            catch (AlreadyClosedException)
+            catch (AlreadyClosedException ex)
             {
+                _diagnostics.TrackPublishUnsafeAttemptFailed(args, stopwatch.Elapsed, ex);
+
                 // TODO: Use callback to determine if publish should be retried
                 return false;
+            }
+            catch (Exception ex)
+            {
+                _diagnostics.TrackPublishUnsafeAttemptFailed(args, stopwatch.Elapsed, ex);
+
+                throw;
             }
         }
 
