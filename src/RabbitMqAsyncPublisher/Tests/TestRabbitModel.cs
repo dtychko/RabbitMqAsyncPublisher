@@ -11,7 +11,7 @@ namespace Tests
     internal class TestBasicProperties : IBasicProperties
     {
         public string TestTag { get; set; }
-        
+
         ushort IContentHeader.ProtocolClassId { get; }
 
         string IContentHeader.ProtocolClassName { get; }
@@ -216,7 +216,7 @@ namespace Tests
             ReadOnlyMemory<byte> body)
         {
             Console.WriteLine("test-model/basic-publish/starting");
-            
+
             PublishRequest request;
             lock (_gate)
             {
@@ -244,7 +244,7 @@ namespace Tests
                 {
                     return;
                 }
-                
+
                 if (t.Result)
                 {
                     FireBasicAcks(new BasicAckEventArgs {DeliveryTag = request.DeliveryTag, Multiple = false});
@@ -262,20 +262,28 @@ namespace Tests
 
         public event EventHandler<ShutdownEventArgs> ModelShutdown;
 
+        private readonly object _eventSyncRoot = new object();
+
         public void FireModelShutdown(ShutdownEventArgs args)
         {
-            _currentShutdown = args;
-            Console.WriteLine("Test model moved to Shutdown state");
-            ModelShutdown?.Invoke(this, args);
+            lock (_eventSyncRoot)
+            {
+                _currentShutdown = args;
+                Console.WriteLine("Test model moved to Shutdown state");
+                ModelShutdown?.Invoke(this, args);
+            }
         }
 
         public event EventHandler<EventArgs> Recovery;
 
         public void FireRecovery(EventArgs args)
         {
-            _currentShutdown = null;
-            Console.WriteLine("Test model moved to Recovered state");
-            Recovery?.Invoke(this, args);
+            lock (_eventSyncRoot)
+            {
+                _currentShutdown = null;
+                Console.WriteLine("Test model moved to Recovered state");
+                Recovery?.Invoke(this, args);
+            }
         }
 
         void IDisposable.Dispose()
@@ -518,7 +526,7 @@ namespace Tests
             throw new NotImplementedException();
         }
 
-        int IModel.ChannelNumber  => throw new NotImplementedException();
+        int IModel.ChannelNumber => throw new NotImplementedException();
         ShutdownEventArgs IModel.CloseReason => throw new NotImplementedException();
 
         IBasicConsumer IModel.DefaultConsumer { get; set; }
@@ -531,11 +539,23 @@ namespace Tests
 
         public event EventHandler<BasicAckEventArgs> BasicAcks;
 
-        public void FireBasicAcks(BasicAckEventArgs args) => BasicAcks?.Invoke(this, args);
+        public void FireBasicAcks(BasicAckEventArgs args)
+        {
+            lock (_eventSyncRoot)
+            {
+                BasicAcks?.Invoke(this, args);
+            }
+        }
 
         public event EventHandler<BasicNackEventArgs> BasicNacks;
 
-        public void FireBasicNacks(BasicNackEventArgs args) => BasicNacks?.Invoke(this, args);
+        public void FireBasicNacks(BasicNackEventArgs args)
+        {
+            lock (_eventSyncRoot)
+            {
+                BasicNacks?.Invoke(this, args);
+            }
+        }
 
         public event EventHandler<EventArgs> BasicRecoverOk;
 
@@ -552,6 +572,5 @@ namespace Tests
         public event EventHandler<FlowControlEventArgs> FlowControl;
 
         public void FireFlowControl(FlowControlEventArgs args) => FlowControl?.Invoke(this, args);
-
     }
 }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
@@ -50,12 +51,17 @@ namespace Tests
                         new AsyncPublisherWithRetries(new AsyncPublisher(model), TimeSpan.FromMilliseconds(10))))
                 {
                     var publishTasks = new ConcurrentBag<Task>();
+                    var counter = 0;
 
                     for (var i = 0; i < publishTaskCount; i++)
                     {
-                        var body = Encoding.UTF8.GetBytes($"Message #{i}");
-                        publishTasks.Add(Task.Run(() => publisher.PublishUnsafeAsync(
-                                "test-exchange", "no-routing", body, new TestBasicProperties(), cancellationToken),
+                        publishTasks.Add(Task.Run(() =>
+                            {
+                                var body = Encoding.UTF8.GetBytes($"Message #{Interlocked.Increment(ref counter)}");
+
+                                return publisher.PublishUnsafeAsync(
+                                    "test-exchange", "no-routing", body, new TestBasicProperties(), cancellationToken);
+                            },
                             cancellationToken));
                     }
 
@@ -71,7 +77,8 @@ namespace Tests
         [Test]
         [TestCase(1, 1, 2, 2, 4, 20, 80, 10)]
         [TestCase(100, 1, 2, 2, 4, 20, 80, 10)]
-        [TestCase(500, 1, 2, 1, 2, 5, 95, 3)]
+        [TestCase(500, 10, 20, 20, 40, 30, 70, 10)]
+        [TestCase(500, 1, 2, 1, 2, 20, 80, 10)]
         public async Task ShouldRetryWhenModelShutdownsAndRecovers(
             int publishTaskCount,
             int minSyncPublishWaitTime,
@@ -86,7 +93,7 @@ namespace Tests
 
             var model = new TestRabbitModel(async request =>
             {
-                Console.WriteLine($"Starting next publish for {request.DeliveryTag}");
+                Console.WriteLine($"Starting next publish for {((TestBasicProperties)request.Properties).TestTag}");
                 SyncWait(_random.Next(minSyncPublishWaitTime, maxSyncPublishWaitTime));
                 await Task.Delay(_random.Next(minAsyncPublishWaitTime, minAsyncPublishWaitTime));
                 return true;
@@ -97,6 +104,7 @@ namespace Tests
             await RunWithTimeout(async cancellationToken =>
             {
                 var diagnostics = new TestDiagnostics();
+                var publishUnsafeTasks = new List<(Task<RetryingPublisherResult> task, int seqNo, string testTag)>();
                 using (var publisher =
                     new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
                         new AsyncPublisherWithRetries(
@@ -123,17 +131,24 @@ namespace Tests
                     }, cancellationToken);
 
                     var publishTasks = new ConcurrentBag<Task>();
+                    var counter = 0;
 
                     for (var i = 0; i < publishTaskCount; i++)
                     {
-                        var messageTag = $"Message #{i}";
-                        var body = Encoding.UTF8.GetBytes(messageTag);
                         publishTasks.Add(Task.Run(
                             () =>
                             {
-                                var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
-                                return publisher.PublishUnsafeAsync(
-                                    "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
+                                lock (publishTasks)
+                                {
+                                    var seqNo = Interlocked.Increment(ref counter);
+                                    var messageTag = $"Message #{seqNo}";
+                                    var body = Encoding.UTF8.GetBytes(messageTag);
+                                    var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
+                                    var unsafeTask = publisher.PublishUnsafeAsync(
+                                        "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
+                                    publishUnsafeTasks.Add((unsafeTask, seqNo, messageTag));
+                                    return unsafeTask;
+                                }
                             },
                             cancellationToken));
                     }
@@ -155,6 +170,38 @@ namespace Tests
 
                 diagnostics.FailedRetryAttemptCount.ShouldBeGreaterThan(0);
                 model.PublishCalls.Count.ShouldBeGreaterThanOrEqualTo(publishTaskCount);
+
+                var retires = publishUnsafeTasks
+                    .Where(x => x.Item1.Result.Retries > 0)
+                    .ToList();
+
+                Console.WriteLine($"Retries count = {retires.Count}");
+
+                retires
+                    .Aggregate((x, y) =>
+                    {
+                        if (x.seqNo > y.seqNo)
+                        {
+                            throw new Exception("Reordered");
+                        }
+
+                        return y;
+                    });
+
+                var unackedTags = new List<string>();
+                
+                foreach (var pt in publishUnsafeTasks)
+                {
+                    if (model.Acks.Count(a => pt.testTag == ((TestBasicProperties) a.Properties).TestTag) != 1)
+                    {
+                        unackedTags.Add(pt.testTag);
+                    }
+                }
+
+                if (unackedTags.Any())
+                {
+                    Assert.Fail($"There is no ack for {string.Join(", ", unackedTags)}");
+                }
             });
         }
 
@@ -178,7 +225,7 @@ namespace Tests
         {
             using (var cts = new CancellationTokenSource(Debugger.IsAttached
                 ? TimeSpan.FromMinutes(5)
-                : TimeSpan.FromSeconds(30)))
+                : TimeSpan.FromSeconds(60)))
             {
                 var testTask = test(cts.Token);
 
@@ -199,7 +246,7 @@ namespace Tests
     internal class TestDiagnostics : EmptyDiagnostics
     {
         public int FailedRetryAttemptCount { get; private set; }
-        
+
         public override void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration,
             Exception ex)
         {
@@ -231,6 +278,11 @@ namespace Tests
         public override void TrackModelShutdownEventProcessingCompleted(ShutdownEventArgs args, TimeSpan duration)
         {
             Console.WriteLine("model/shutdown/completed");
+        }
+
+        public override void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
+        {
+            Console.WriteLine($"{GetTestTag(args)}/{args.Attempt}/started");
         }
 
         private static string GetTestTag(PublishArgs args) => ((TestBasicProperties) args.Properties).TestTag;

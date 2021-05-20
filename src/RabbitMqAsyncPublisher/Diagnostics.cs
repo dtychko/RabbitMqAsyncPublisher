@@ -38,7 +38,7 @@ namespace RabbitMqAsyncPublisher
 
         void TrackPublishUnsafeFailed(PublishUnsafeArgs args, TimeSpan duration, Exception ex);
 
-        void TrackPublishUnsafePublished(PublishUnsafeArgs args, TimeSpan duration);
+        void TrackPublishUnsafeBasicPublishCompleted(PublishUnsafeArgs args, TimeSpan duration);
 
         void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged);
     }
@@ -183,7 +183,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackPublishUnsafePublished(PublishUnsafeArgs args, TimeSpan duration)
+        public virtual void TrackPublishUnsafeBasicPublishCompleted(PublishUnsafeArgs args, TimeSpan duration)
         {
         }
 

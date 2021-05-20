@@ -69,6 +69,7 @@
         <Reference Include="System.Xml" />
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="AsyncPublisher2.cs" />
         <Compile Include="AsyncPublisherDeclaringDecorator.cs" />
         <Compile Include="AsyncPublisherPrototype.cs" />
         <Compile Include="AsyncPublisher.cs" />

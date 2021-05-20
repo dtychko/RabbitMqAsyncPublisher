@@ -28,7 +28,7 @@ namespace RabbitMqAsyncPublisher
     /// Limitations:
     /// 1. Doesn't listen to "IModel.BasicReturn" event, as results doesn't handle "returned" messages
     /// </summary>
-    public class AsyncPublisher : IAsyncPublisher<bool>, IAsyncPublisherStateContext
+    public class AsyncPublisher0 : IAsyncPublisher<bool>, IAsyncPublisherStateContext
     {
         private readonly object _stateSyncRoot = new object();
         private IAsyncPublisherState _state;
@@ -39,12 +39,12 @@ namespace RabbitMqAsyncPublisher
 
         IAsyncPublisherDiagnostics IAsyncPublisherStateContext.Diagnostics => _diagnostics;
 
-        public AsyncPublisher(IModel model)
+        public AsyncPublisher0(IModel model)
             : this(model, EmptyDiagnostics.Instance)
         {
         }
 
-        public AsyncPublisher(IModel model, IAsyncPublisherDiagnostics diagnostics)
+        public AsyncPublisher0(IModel model, IAsyncPublisherDiagnostics diagnostics)
         {
             // Heuristic based on reverse engineering of "RabbitMQ.Client" lib
             // that helps to make sure that "ConfirmSelect" method was called on the model
@@ -124,7 +124,7 @@ namespace RabbitMqAsyncPublisher
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var publishTask = _state.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
-                _diagnostics.TrackPublishUnsafePublished(args, stopwatch.Elapsed);
+                _diagnostics.TrackPublishUnsafeBasicPublishCompleted(args, stopwatch.Elapsed);
 
                 var acknowledged = await publishTask;
                 _diagnostics.TrackPublishUnsafeCompleted(args, stopwatch.Elapsed, acknowledged);
@@ -259,17 +259,17 @@ namespace RabbitMqAsyncPublisher
 
         public void SetResult(ulong deliveryTag, bool result)
         {
-            GetSingle(deliveryTag)?.TrySetResult(result);
+            GetAndRemoveSingle(deliveryTag)?.TrySetResult(result);
         }
 
         public void SetException(ulong deliveryTag, Exception ex)
         {
-            GetSingle(deliveryTag)?.TrySetException(ex);
+            GetAndRemoveSingle(deliveryTag)?.TrySetException(ex);
         }
 
         public void SetResultForAllUpTo(ulong deliveryTag, bool result)
         {
-            foreach (var source in GetAllUpTo(deliveryTag))
+            foreach (var source in GetAndRemoveAllUpTo(deliveryTag))
             {
                 source.TrySetResult(result);
             }
@@ -277,13 +277,13 @@ namespace RabbitMqAsyncPublisher
 
         public void SetExceptionForAll(Exception exception)
         {
-            foreach (var source in GetAllUpTo(ulong.MaxValue))
+            foreach (var source in GetAndRemoveAllUpTo(ulong.MaxValue))
             {
                 source.TrySetException(exception);
             }
         }
 
-        private TaskCompletionSource<bool> GetSingle(ulong deliveryTag)
+        private TaskCompletionSource<bool> GetAndRemoveSingle(ulong deliveryTag)
         {
             lock (_syncRoot)
             {
@@ -298,7 +298,8 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private IEnumerable<TaskCompletionSource<bool>> GetAllUpTo(ulong deliveryTag)
+        // ReSharper disable once ReturnTypeCanBeEnumerable.Local
+        private IList<TaskCompletionSource<bool>> GetAndRemoveAllUpTo(ulong deliveryTag)
         {
             lock (_syncRoot)
             {
