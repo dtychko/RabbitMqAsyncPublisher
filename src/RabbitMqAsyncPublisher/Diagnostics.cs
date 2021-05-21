@@ -30,8 +30,6 @@ namespace RabbitMqAsyncPublisher
 
         void TrackRecoveryEventProcessingCompleted(TimeSpan duration);
 
-        void TrackUnsupportedSignal(string state, string signal);
-
         void TrackPublishUnsafe(PublishUnsafeArgs args);
 
         void TrackPublishUnsafeCanceled(PublishUnsafeArgs args, TimeSpan duration);
@@ -41,6 +39,21 @@ namespace RabbitMqAsyncPublisher
         void TrackPublishUnsafeBasicPublishCompleted(PublishUnsafeArgs args, TimeSpan duration);
 
         void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged);
+
+        void TrackCompletionSourceRegistrySize(int size);
+
+        void TrackDispose();
+
+        void TrackDisposeCompleted();
+    }
+
+    public interface IAsyncPublisherDeclaringDecoratorDiagnostics
+    {
+        void TrackDeclare();
+
+        void TrackDeclareCompleted(TimeSpan duration);
+
+        void TrackDeclareFailed(TimeSpan duration, Exception ex);
     }
 
     public interface IAsyncPublisherWithRetriesDiagnostics
@@ -111,7 +124,8 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics
+    public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics,
+        IAsyncPublisherDeclaringDecoratorDiagnostics
     {
         public static readonly EmptyDiagnostics Instance = new EmptyDiagnostics();
 
@@ -135,7 +149,8 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackBasicNacksEventProcessingFailed(BasicNackEventArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackBasicNacksEventProcessingFailed(BasicNackEventArgs args, TimeSpan duration,
+            Exception ex)
         {
         }
 
@@ -147,7 +162,8 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackModelShutdownEventProcessingFailed(ShutdownEventArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackModelShutdownEventProcessingFailed(ShutdownEventArgs args, TimeSpan duration,
+            Exception ex)
         {
         }
 
@@ -164,10 +180,6 @@ namespace RabbitMqAsyncPublisher
         }
 
         public virtual void TrackRecoveryEventProcessingCompleted(TimeSpan duration)
-        {
-        }
-
-        public virtual void TrackUnsupportedSignal(string state, string signal)
         {
         }
 
@@ -191,11 +203,24 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
+        public void TrackCompletionSourceRegistrySize(int size)
+        {
+        }
+
+        public void TrackDispose()
+        {
+        }
+
+        public void TrackDisposeCompleted()
+        {
+        }
+
         public virtual void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
         {
         }
 
-        public virtual void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration, Exception ex)
+        public virtual void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration,
+            Exception ex)
         {
         }
 
@@ -209,6 +234,18 @@ namespace RabbitMqAsyncPublisher
         }
 
         public virtual void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay)
+        {
+        }
+
+        public void TrackDeclare()
+        {
+        }
+
+        public void TrackDeclareCompleted(TimeSpan duration)
+        {
+        }
+
+        public void TrackDeclareFailed(TimeSpan duration, Exception ex)
         {
         }
     }

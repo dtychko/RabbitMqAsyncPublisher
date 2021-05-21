@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
@@ -24,19 +25,27 @@ namespace RabbitMqAsyncPublisher
     {
         private readonly IAsyncPublisher<TResult> _decorated;
         private readonly Action<IModel> _declare;
+        private readonly IAsyncPublisherDeclaringDecoratorDiagnostics _diagnostics;
+        private bool _isDeclared;
         private int _disposed;
-
-        // Could be accessed concurrently, so should be marked as "volatile"
-        private volatile bool _isDeclared;
 
         public IModel Model => _decorated.Model;
 
         public AsyncPublisherDeclaringDecorator(
             IAsyncPublisher<TResult> decorated,
             Action<IModel> declare)
+            : this(decorated, declare, EmptyDiagnostics.Instance)
+        {
+        }
+
+        public AsyncPublisherDeclaringDecorator(
+            IAsyncPublisher<TResult> decorated,
+            Action<IModel> declare,
+            IAsyncPublisherDeclaringDecoratorDiagnostics diagnostics)
         {
             _decorated = decorated;
             _declare = declare;
+            _diagnostics = diagnostics;
 
             Model.ModelShutdown += OnModelShutdown;
         }
@@ -46,12 +55,6 @@ namespace RabbitMqAsyncPublisher
             // Current connection is closed.
             // Reset "_isDeclared" flag to make sure that everything is redeclared when connection is restored. 
             _isDeclared = false;
-
-            // _logger.Info(
-                // "{0} received event '{1}'. Required RabbitMQ resources will be redeclared before publishing next message.",
-                // GetType().Name,
-                // nameof(IModel.ModelShutdown)
-            // );
         }
 
         public Task<TResult> PublishUnsafeAsync(
@@ -61,52 +64,61 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!_isDeclared)
-            {
-                DeclareUnsafe();
-                _isDeclared = true;
-            }
+            EnsureDeclared();
 
             return _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
         }
 
-        private void DeclareUnsafe()
+        private readonly object _declareSyncRoot = new object();
+
+        private void EnsureDeclared()
         {
-            try
+            if (_isDeclared)
             {
-                // _logger.Info(
-                    // "{0} declaring required RabbitMQ resources ...",
-                    // GetType().Name
-                // );
-
-                _declare(Model);
-
-                // _logger.Info(
-                    // "{0} completed declaration of required RabbitMQ resources.",
-                    // GetType().Name
-                // );
+                return;
             }
-            catch (Exception ex)
-            {
-                // _logger.Error(
-                    // "{0} couldn't complete declaration of required RabbitMQ resources because of unexpected error.",
-                    // ex,
-                    // GetType().Name
-                // );
 
-                throw;
+            lock (_declareSyncRoot)
+            {
+                if (_isDeclared)
+                {
+                    return;
+                }
+
+                var stopwatch = Stopwatch.StartNew();
+
+                try
+                {
+                    _diagnostics.TrackDeclare();
+                    _declare(Model);
+                    _diagnostics.TrackDeclareCompleted(stopwatch.Elapsed);
+                }
+                catch (Exception ex)
+                {
+                    _diagnostics.TrackDeclareFailed(stopwatch.Elapsed, ex);
+                }
+
+                _isDeclared = true;
             }
         }
 
         public void Dispose()
         {
-            _decorated.Dispose();
-
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
+                _decorated.Dispose();
                 Model.ModelShutdown -= OnModelShutdown;
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed == 1)
+            {
+                throw new ObjectDisposedException(nameof(AsyncPublisherWithRetries));
             }
         }
     }

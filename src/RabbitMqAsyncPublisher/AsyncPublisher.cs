@@ -98,14 +98,16 @@ namespace RabbitMqAsyncPublisher
                     {
                         Task.Run(() => source.TrySetResult(ack));
                     }
-
-                    return;
                 }
-
-                foreach (var source in _taskCompletionSourceRegistry.RemoveAllUpTo(deliveryTag))
+                else
                 {
-                    Task.Run(() => source.TrySetResult(ack));
+                    foreach (var source in _taskCompletionSourceRegistry.RemoveAllUpTo(deliveryTag))
+                    {
+                        Task.Run(() => source.TrySetResult(ack));
+                    }
                 }
+
+                _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
             }
         }
 
@@ -122,6 +124,8 @@ namespace RabbitMqAsyncPublisher
                         {
                             Task.Run(() => source.TrySetException(new AlreadyClosedException(args)));
                         }
+
+                        _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
                     }
                 },
                 () => _diagnostics.TrackModelShutdownEventProcessing(args),
@@ -176,6 +180,8 @@ namespace RabbitMqAsyncPublisher
                     var seqNo = Model.NextPublishSeqNo;
                     Model.BasicPublish(exchange, routingKey, properties, body);
                     publishTaskCompletionSource = _taskCompletionSourceRegistry.Register(seqNo);
+
+                    _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
                 }
 
                 _diagnostics.TrackPublishUnsafeBasicPublishCompleted(args, stopwatch.Elapsed);
@@ -229,6 +235,8 @@ namespace RabbitMqAsyncPublisher
                 return;
             }
 
+            _diagnostics.TrackDispose();
+
             Model.BasicAcks -= OnBasicAcks;
             Model.BasicNacks -= OnBasicNacks;
             Model.ModelShutdown -= OnModelShutdown;
@@ -239,7 +247,11 @@ namespace RabbitMqAsyncPublisher
                 {
                     Task.Run(() => source.TrySetException(new ObjectDisposedException(nameof(AsyncPublisher))));
                 }
+
+                _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
             }
+
+            _diagnostics.TrackDisposeCompleted();
         }
 
         private void ThrowIfDisposed()
@@ -255,6 +267,8 @@ namespace RabbitMqAsyncPublisher
     {
         private readonly Dictionary<ulong, SourceEntry> _sources = new Dictionary<ulong, SourceEntry>();
         private readonly LinkedList<ulong> _deliveryTagQueue = new LinkedList<ulong>();
+
+        public int Count => _sources.Count;
 
         public TaskCompletionSource<bool> Register(ulong deliveryTag)
         {

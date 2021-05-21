@@ -13,9 +13,9 @@ namespace RabbitMqAsyncPublisher
         private readonly IAsyncPublisher<bool> _decorated;
         private readonly TimeSpan _retryDelay;
         private readonly IAsyncPublisherWithRetriesDiagnostics _diagnostics;
-        private volatile bool _isDisposed;
         private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
         private readonly ManualResetEventSlim _canPublish = new ManualResetEventSlim(true);
+        private bool _isDisposed;
 
         public IModel Model => _decorated.Model;
 
@@ -79,7 +79,8 @@ namespace RabbitMqAsyncPublisher
                         _canPublish.Set();
                     }
                 });
-                addedQueueNode.Value.CompletionSource.TrySetResult(true);
+
+                Task.Run(() => addedQueueNode.Value.CompletionSource.TrySetResult(true));
             });
         }
 
@@ -135,7 +136,8 @@ namespace RabbitMqAsyncPublisher
 
             try
             {
-                var acknowledged = await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
+                var acknowledged =
+                    await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
                 _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
                 return acknowledged;
             }
