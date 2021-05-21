@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -11,11 +10,12 @@ using RabbitMQ.Client;
 using RabbitMQ.Client.Exceptions;
 using RabbitMqAsyncPublisher;
 using Shouldly;
+using static Tests.TestUtils;
 
 namespace Tests
 {
     [TestFixture]
-    public class Tests
+    public class RandomizedPublishTests
     {
         private static readonly Random _random = new Random();
 
@@ -46,9 +46,7 @@ namespace Tests
 
             await RunWithTimeout(async cancellationToken =>
             {
-                using (var publisher =
-                    new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
-                        new AsyncPublisherWithRetries(new AsyncPublisher(model), TimeSpan.FromMilliseconds(10))))
+                using (var publisher = CreatePublisher(model, new TestDiagnostics(), TimeSpan.FromMilliseconds(10)))
                 {
                     var publishTasks = new ConcurrentBag<Task>();
                     var counter = 0;
@@ -93,7 +91,7 @@ namespace Tests
 
             var model = new TestRabbitModel(async request =>
             {
-                Console.WriteLine($"Starting next publish for {((TestBasicProperties)request.Properties).TestTag}");
+                Console.WriteLine($"Starting next publish for {GetMessageTag(request.Properties)}");
                 SyncWait(_random.Next(minSyncPublishWaitTime, maxSyncPublishWaitTime));
                 await Task.Delay(_random.Next(minAsyncPublishWaitTime, minAsyncPublishWaitTime));
                 return true;
@@ -104,17 +102,12 @@ namespace Tests
             await RunWithTimeout(async cancellationToken =>
             {
                 var diagnostics = new TestDiagnostics();
-                var publishUnsafeTasks = new List<(Task<RetryingPublisherResult> task, int seqNo, string testTag)>();
-                using (var publisher =
-                    new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
-                        new AsyncPublisherWithRetries(
-                            new AsyncPublisher(model, diagnostics),
-                            TimeSpan.FromMilliseconds(retryDelayMs), diagnostics)))
+                var publishUnsafeTasks = new List<PublishTask>();
+                using (var publisher = CreatePublisher(model, diagnostics, TimeSpan.FromMilliseconds(retryDelayMs)))
                 {
                     Task modelLifecycleTask = default;
                     modelLifecycleTask = Task.Run(() =>
                     {
-                        //Task.Delay(_random.Next(5, 8), cancellationToken).Wait(cancellationToken);
                         model.FireModelShutdown(new ShutdownEventArgs(default, default, default));
 
                         while (!Volatile.Read(ref allPublishesFinished))
@@ -130,7 +123,7 @@ namespace Tests
                         }
                     }, cancellationToken);
 
-                    var publishTasks = new ConcurrentBag<Task>();
+                    var publishTasks = new List<Task>();
                     var counter = 0;
 
                     for (var i = 0; i < publishTaskCount; i++)
@@ -138,15 +131,19 @@ namespace Tests
                         publishTasks.Add(Task.Run(
                             () =>
                             {
+                                // Publish tasks are enqueued into publisher under lock
+                                // to ensure that they start executing in predictable order,
+                                // so that we can make test assertions regarding their retry order.
                                 lock (publishTasks)
                                 {
-                                    var seqNo = Interlocked.Increment(ref counter);
-                                    var messageTag = $"Message #{seqNo}";
+                                    var messageIndex = Interlocked.Increment(ref counter);
+                                    var messageTag = $"Message #{messageIndex}";
                                     var body = Encoding.UTF8.GetBytes(messageTag);
                                     var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
                                     var unsafeTask = publisher.PublishUnsafeAsync(
                                         "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
-                                    publishUnsafeTasks.Add((unsafeTask, seqNo, messageTag));
+                                    publishUnsafeTasks.Add(
+                                        new PublishTask {Task = unsafeTask, MessageIndex = messageIndex, MessageTag = messageTag});
                                     return unsafeTask;
                                 }
                             },
@@ -171,120 +168,93 @@ namespace Tests
                 diagnostics.FailedRetryAttemptCount.ShouldBeGreaterThan(0);
                 model.PublishCalls.Count.ShouldBeGreaterThanOrEqualTo(publishTaskCount);
 
-                var retires = publishUnsafeTasks
-                    .Where(x => x.Item1.Result.Retries > 0)
-                    .ToList();
-
-                Console.WriteLine($"Retries count = {retires.Count}");
-
-                retires
-                    .Aggregate((x, y) =>
-                    {
-                        if (x.seqNo > y.seqNo)
-                        {
-                            throw new Exception("Reordered");
-                        }
-
-                        return y;
-                    });
-
-                var unackedTags = new List<string>();
-                
-                foreach (var pt in publishUnsafeTasks)
-                {
-                    if (model.Acks.Count(a => pt.testTag == ((TestBasicProperties) a.Properties).TestTag) != 1)
-                    {
-                        unackedTags.Add(pt.testTag);
-                    }
-                }
-
-                if (unackedTags.Any())
-                {
-                    Assert.Fail($"There is no ack for {string.Join(", ", unackedTags)}");
-                }
+                AssertRetriesAreOrdered(publishUnsafeTasks);
+                AssertAllPublishesAreAcked(model, publishUnsafeTasks);
             });
         }
 
-        private static void SyncWait(int iterations = 5)
+        /// <remarks>
+        /// By the end of the test all messages should be successfully published (with or without retries).
+        /// This method checks that test model received all necessary <see cref="TestRabbitModel.BasicPublish"/> calls,
+        /// was able to complete them and fire ACK messages via <see cref="TestRabbitModel.BasicAcks"/>. 
+        /// </remarks>
+        private static void AssertAllPublishesAreAcked(
+            TestRabbitModel model,
+            IEnumerable<PublishTask> publishTasks)
         {
-            var wait = new SpinWait();
-            for (int i = 0; i < iterations; i++)
+            var unackedTags = new List<string>();
+
+            foreach (var pt in publishTasks)
             {
-                wait.SpinOnce();
-            }
-        }
-
-        private static void ConfigureThreadPool(int numberOfPublishers)
-        {
-            var totalThreadCount = numberOfPublishers + 10;
-            ThreadPool.SetMaxThreads(totalThreadCount, totalThreadCount);
-            ThreadPool.SetMinThreads(totalThreadCount, totalThreadCount);
-        }
-
-        private static async Task RunWithTimeout(Func<CancellationToken, Task> test)
-        {
-            using (var cts = new CancellationTokenSource(Debugger.IsAttached
-                ? TimeSpan.FromMinutes(5)
-                : TimeSpan.FromSeconds(60)))
-            {
-                var testTask = test(cts.Token);
-
-                var resultTask = await Task.WhenAny(
-                    Task.Delay(-1, cts.Token),
-                    testTask);
-
-                cts.IsCancellationRequested.ShouldBeFalse();
-
-                if (resultTask == testTask)
+                if (model.Acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) != 1)
                 {
-                    await testTask;
+                    unackedTags.Add(pt.MessageTag);
                 }
             }
+
+            if (unackedTags.Any())
+            {
+                Assert.Fail($"There is no ack for {string.Join(", ", unackedTags)}");
+            }
         }
-    }
 
-    internal class TestDiagnostics : EmptyDiagnostics
-    {
-        public int FailedRetryAttemptCount { get; private set; }
-
-        public override void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration,
-            Exception ex)
+        /// <remarks>
+        /// When publish error happens, publisher transitions into "sequential" state,
+        /// and retries are attempted in the same order the messages were enqueued into publisher,
+        /// so that output message order is preserved.
+        /// This method checks that when retries happen, they are indeed ordered.
+        /// </remarks>
+        private static void AssertRetriesAreOrdered(
+            IEnumerable<PublishTask> publishTasks)
         {
-            FailedRetryAttemptCount++;
-            Console.WriteLine($"{GetTestTag(args)}/{args.Attempt}/error {duration.TotalMilliseconds}");
+            var retries = publishTasks
+                .Where(x => x.Task.Result.Retries > 0)
+                .ToList();
+
+            Console.WriteLine($"Retries count = {retries.Count}");
+
+            retries.Aggregate((a, b) =>
+            {
+                if (a.MessageIndex > b.MessageIndex)
+                {
+                    Assert.Fail(
+                        $"Publish retry order is broken: {a.MessageTag}({a.MessageIndex}) > {b.MessageTag}({b.MessageIndex}). All retries: {string.Join(",", retries.Select(r => $"{r.MessageTag}({r.MessageIndex})"))}");
+                }
+
+                return b;
+            });
         }
 
-        public override void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration,
-            bool acknowledged)
+        private AsyncPublisherSyncDecorator<RetryingPublisherResult> CreatePublisher(
+            TestRabbitModel model, TestDiagnostics diagnostics,
+            TimeSpan retryDelay)
         {
-            Console.WriteLine($"{GetTestTag(args)}/{args.Attempt}/completed {duration.TotalMilliseconds}");
+            return new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
+                new AsyncPublisherWithRetries(
+                    new AsyncPublisher(model, diagnostics),
+                    retryDelay, diagnostics));
         }
 
-        public override void TrackRecoveryEventProcessing()
+        /// <summary>
+        /// Represents a task/job to publish a single message in test scenario
+        /// </summary>
+        private class PublishTask
         {
-            Console.WriteLine("model/recovery/processing");
-        }
+            /// <summary>
+            /// Task returned by publisher implementation.
+            /// </summary>
+            public Task<RetryingPublisherResult> Task { get; set; }
 
-        public override void TrackRecoveryEventProcessingCompleted(TimeSpan duration)
-        {
-            Console.WriteLine($"model/recovery/completed");
+            /// <summary>
+            /// Represents message generation order, later messages have larger values.
+            /// </summary>
+            public int MessageIndex { get; set; }
+            
+            /// <summary>
+            /// Unique message identifier which is also appended to message's <see cref="TestBasicProperties"/>.
+            /// Can be used to correlate messages in assertions and under debug.
+            /// </summary>
+            public string MessageTag { get; set; }
         }
-
-        public override void TrackModelShutdownEventProcessing(ShutdownEventArgs args)
-        {
-            Console.WriteLine("model/shutdown/processing");
-        }
-
-        public override void TrackModelShutdownEventProcessingCompleted(ShutdownEventArgs args, TimeSpan duration)
-        {
-            Console.WriteLine("model/shutdown/completed");
-        }
-
-        public override void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
-        {
-            Console.WriteLine($"{GetTestTag(args)}/{args.Attempt}/started");
-        }
-
-        private static string GetTestTag(PublishArgs args) => ((TestBasicProperties) args.Properties).TestTag;
     }
 }
