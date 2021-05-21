@@ -72,7 +72,32 @@ namespace RabbitMqAsyncPublisher
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
 
-            using (var connection = new ConnectionFactory {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true, ClientProvidedName = "rabbitmq-publish-tests"}
+            var connectionFactory = new ConnectionFactory
+                {Uri = RabbitMqUri, AutomaticRecoveryEnabled = false, ClientProvidedName = "rabbitmq-publish-tests"};
+
+            using (var autoRecovery = new AutoRecovery(
+                () => connectionFactory.CreateConnection(),
+                new Func<IConnection, IDisposable>[] {CreateTestComponent},
+                TimeSpan.FromMilliseconds(3000)))
+            {
+                autoRecovery.Start();
+
+                Thread.Sleep(60000);
+            }
+        }
+
+        private static IDisposable CreateTestComponent(IConnection connection)
+        {
+            return new Disposable(() => { });
+        }
+
+        public static void Main43()
+        {
+            ThreadPool.SetMaxThreads(100, 100);
+            ThreadPool.SetMinThreads(100, 100);
+
+            using (var connection = new ConnectionFactory
+                    {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true, ClientProvidedName = "rabbitmq-publish-tests"}
                 .CreateConnection())
             using (var model = connection.CreateModel())
             {
@@ -94,12 +119,16 @@ namespace RabbitMqAsyncPublisher
                 model.ModelShutdown +=
                     (sender, args) =>
                     {
-                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown SeqNo={model.NextPublishSeqNo}");
+                        Console.WriteLine(
+                            $" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown SeqNo={model.NextPublishSeqNo}");
                         Thread.Sleep(12000);
-                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown2 SeqNo={model.NextPublishSeqNo}");
+                        Console.WriteLine(
+                            $" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown2 SeqNo={model.NextPublishSeqNo}");
                     };
                 ((IRecoverable) model).Recovery +=
-                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery SeqNo={model.NextPublishSeqNo}");
+                    (sender, args) =>
+                        Console.WriteLine(
+                            $" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery SeqNo={model.NextPublishSeqNo}");
 
                 model.ConfirmSelect();
                 // model.QueueDeclare(QueueName, true, false, false);
@@ -116,7 +145,8 @@ namespace RabbitMqAsyncPublisher
                         Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Publishing#{i} ...");
                         var properties = model.CreateBasicProperties();
                         properties.Persistent = true;
-                        Console.WriteLine($" ** [{Thread.CurrentThread.ManagedThreadId}] Next seqno: {model.NextPublishSeqNo}");
+                        Console.WriteLine(
+                            $" ** [{Thread.CurrentThread.ManagedThreadId}] Next seqno: {model.NextPublishSeqNo}");
                         publisher.PublishUnsafeAsync(
                                 "",
                                 QueueName,
@@ -128,7 +158,8 @@ namespace RabbitMqAsyncPublisher
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Failed#{i} => {ex.GetType().Name}");
+                        Console.WriteLine(
+                            $" >> [{Thread.CurrentThread.ManagedThreadId}] Failed#{i} => {ex.GetType().Name}");
                     }
 
                     Thread.Sleep(5000);

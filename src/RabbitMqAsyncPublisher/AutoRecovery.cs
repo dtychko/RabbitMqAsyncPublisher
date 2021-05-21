@@ -1,38 +1,38 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
     public class AutoRecovery : IDisposable
     {
-        private readonly Func<IConnection> _getConnection;
-        private readonly TimeSpan _connectionAcquireInterval;
+        private readonly Func<IConnection> _connect;
+        private readonly IReadOnlyList<Func<IConnection, IDisposable>> _componentRegistrations;
+        private readonly TimeSpan _reconnectDelay;
         private readonly SemaphoreSlim _connectionSemaphore = new SemaphoreSlim(1, 1);
-        
         private IConnection _currentConnection;
+        private IReadOnlyList<IDisposable> _currentComponents;
         private volatile int _disposed;
 
-        private readonly List<IDisposable> _activeComponents = new List<IDisposable>();
-        private readonly IReadOnlyList<Func<IDisposable>> _componentRegistrations;
-        
         public AutoRecovery(
-            Func<IConnection> getConnection,
-            IReadOnlyList<Func<IDisposable>> componentRegistrations,
-            TimeSpan connectionAcquireInterval)
+            Func<IConnection> connect,
+            IReadOnlyList<Func<IConnection, IDisposable>> componentRegistrations,
+            TimeSpan reconnectDelay)
         {
-            _getConnection = getConnection;
+            _connect = connect;
             _componentRegistrations = componentRegistrations;
-            _connectionAcquireInterval = connectionAcquireInterval;
+            _reconnectDelay = reconnectDelay;
         }
 
         public async void Start()
         {
             try
             {
-                await StartAsync(default);
+                await ConnectAsync();
             }
             catch (Exception ex)
             {
@@ -40,12 +40,13 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private async Task StartAsync(CancellationToken cancellationToken)
+        private async Task ConnectAsync()
         {
-            await _connectionSemaphore.WaitAsync(cancellationToken);
+            await _connectionSemaphore.WaitAsync();
+
             try
             {
-                await StartThreadUnsafeAsync(cancellationToken);
+                await ConnectThreadUnsafeAsync();
             }
             finally
             {
@@ -53,105 +54,157 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private async Task StartThreadUnsafeAsync(CancellationToken cancellationToken)
+        private async Task ConnectThreadUnsafeAsync()
         {
-            while (_currentConnection is null
-                   && _disposed == 0 && !cancellationToken.IsCancellationRequested && !CreateAndInitConnectionThreadUnsafe())
+            // Make sure that previous connection is disposed together with its components
+            CleanUpThreadUnsafe();
+
+            for (var attempt = 1;; attempt += 1)
             {
-                await Task.Delay(_connectionAcquireInterval, cancellationToken);
+                if (_disposed == 1)
+                {
+                    return;
+                }
+
+                Console.WriteLine($"Connect attempt#{attempt}");
+                var stopwatch = Stopwatch.StartNew();
+
+                try
+                {
+                    _currentConnection = CreateConnectionThreadUnsafe();
+                    _currentComponents = InitializeComponentsThreadUnsafe(_currentConnection);
+
+                    // 1. According to "RabbitMQ.Client" reference,
+                    // "IConnection.ConnectionShutdown" event will be fired immediately if connection is already closed
+                    // 2. Subscribing on "IConnection.ConnectionShutdown" throws if connection is already disposed
+                    try
+                    {
+                        _currentConnection.ConnectionShutdown += OnConnectionShutdown;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Unable to subscribe on IConnection.ConnectionShutdown event: {ex}");
+                        throw;
+                    }
+
+                    Console.WriteLine($"Connect attempt#{attempt} succeeded in {stopwatch.ElapsedMilliseconds} ms");
+
+                    return;
+                }
+                catch (Exception)
+                {
+                    CleanUpThreadUnsafe();
+                    await Task.Delay(_reconnectDelay);
+                }
             }
         }
 
-        private bool CreateAndInitConnectionThreadUnsafe()
+        private IConnection CreateConnectionThreadUnsafe()
         {
             try
             {
-                _currentConnection =
-                    _getConnection() ?? throw new Exception("Acquired connection but it is null");
+                var connection = _connect();
+
+                if (connection is null)
+                {
+                    throw new Exception("Acquired connection but it is null");
+                }
+
+                if (connection is IAutorecoveringConnection)
+                {
+                    throw new Exception("Auto recovering connection is not supported");
+                }
+
+                return connection;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Unable to acquire connection: {ex}");
-                return false;
+                throw;
             }
+        }
 
-            try
+        private IReadOnlyList<IDisposable> InitializeComponentsThreadUnsafe(IConnection connection)
+        {
+            var components = new List<IDisposable>();
+
+            foreach (var registration in _componentRegistrations)
             {
-                if (!_currentConnection.IsOpen)
+                try
                 {
-                    throw new Exception("Acquired connection but it's already closed");
-                }
+                    ShutdownEventArgs closeReason = null;
+                    Interlocked.Exchange(ref closeReason, connection.CloseReason);
 
-                foreach (var registration in _componentRegistrations)
-                {
-                    try
+                    if (!(closeReason is null))
                     {
-                        _activeComponents.Add(registration());
+                        throw new AlreadyClosedException(closeReason);
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Unable to initialize component: {ex}");
-                        // continue because we don't want to fail all if one component fails
-                    }
-                }
 
-                _currentConnection.ConnectionShutdown += OnConnectionShutdown;
-                // TODO: here connection may become closed, and our OnConnectionShutdown schedules next loop iteration,
-                // which may overlaps with outer loop, creating redundant cleanup/reinit.
-                if (!_currentConnection.IsOpen)
+                    components.Add(registration(connection));
+                }
+                catch (Exception ex)
                 {
-                    throw new Exception("Acquired connection but it's already closed");
+                    Console.WriteLine($"Unable to initialize component: {ex}");
+                    // continue because we don't want to fail all if one component fails
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Unable to init on connection: {ex}");
-                CleanUpThreadUnsafe();
-                return false;
-            }
 
-            return true;
+            return components;
         }
 
         private void CleanUpThreadUnsafe()
         {
-            foreach (var component in _activeComponents)
+            if (!(_currentComponents is null))
             {
-                try
+                foreach (var component in _currentComponents)
                 {
-                    component.Dispose();
+                    try
+                    {
+                        component.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Unable to dispose component: {ex}");
+                    }
                 }
-                catch (Exception componentException)
-                {
-                    Console.WriteLine($"Unable to dispose component: {componentException}");
-                }
+
+                _currentComponents = null;
             }
 
-            _activeComponents.Clear();
-            _currentConnection.Dispose();
-            _currentConnection.ConnectionShutdown -= OnConnectionShutdown;
-            _currentConnection = null;
+            if (!(_currentConnection is null))
+            {
+                // Unsubscribing from "IConnection.ConnectionShutdown" throws if connection is already disposed
+                try
+                {
+                    _currentConnection.ConnectionShutdown -= OnConnectionShutdown;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Unable to unsubscribe from IConnection.ConnectionShutdown event: {ex}");
+                }
+
+                try
+                {
+                    _currentConnection.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Unable to dispose current connection: {ex}");
+                }
+
+                _currentConnection = null;
+            }
         }
 
         private void OnConnectionShutdown(object sender, ShutdownEventArgs e)
         {
-            // TODO: this could trigger unwanted cleanups and re-starts
-            // when this task acquires semaphore after long time after main loop successfully completes initialization
-            Task.Run(async () =>
+            Task.Run(() =>
             {
-                await _connectionSemaphore.WaitAsync();
-                try
-                {
-                    CleanUpThreadUnsafe();
-                    await StartThreadUnsafeAsync(default);
-                }
-                finally
-                {
-                    _connectionSemaphore.Release();
-                }
+                Console.WriteLine("Connection Shutdown");
+                return ConnectAsync();
             });
         }
-        
+
         // TODO: integrate time-based connection check and re-init
 
         public void Dispose()
@@ -162,12 +215,10 @@ namespace RabbitMqAsyncPublisher
             }
 
             _connectionSemaphore.Wait();
+
             try
             {
-                if (_currentConnection != null)
-                {
-                    CleanUpThreadUnsafe();
-                }
+                CleanUpThreadUnsafe();
             }
             finally
             {
