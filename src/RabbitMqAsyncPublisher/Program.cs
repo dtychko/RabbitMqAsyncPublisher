@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
+        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 100;
@@ -78,8 +78,10 @@ namespace RabbitMqAsyncPublisher
             {
                 connection.ConnectionShutdown +=
                     (sender, args) =>
+                    {
                         Console.WriteLine(
                             $" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:ConnectionShutdown");
+                    };
                 ((IAutorecoveringConnection) connection).RecoverySucceeded += (sender, args) =>
                     Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Connection:RecoverySucceeded");
                 ((IAutorecoveringConnection) connection).ConnectionRecoveryError += (sender, args) =>
