@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
+        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 100;
@@ -72,7 +72,7 @@ namespace RabbitMqAsyncPublisher
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
 
-            using (var connection = new ConnectionFactory {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true}
+            using (var connection = new ConnectionFactory {Uri = RabbitMqUri, AutomaticRecoveryEnabled = true, ClientProvidedName = "rabbitmq-publish-tests"}
                 .CreateConnection())
             using (var model = connection.CreateModel())
             {
@@ -91,9 +91,13 @@ namespace RabbitMqAsyncPublisher
                         Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:BasicAcks");
                 model.ModelShutdown +=
                     (sender, args) =>
-                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown");
+                    {
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown SeqNo={model.NextPublishSeqNo}");
+                        Thread.Sleep(12000);
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:ModelShutdown2 SeqNo={model.NextPublishSeqNo}");
+                    };
                 ((IRecoverable) model).Recovery +=
-                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery");
+                    (sender, args) => Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery SeqNo={model.NextPublishSeqNo}");
 
                 model.ConfirmSelect();
                 // model.QueueDeclare(QueueName, true, false, false);
@@ -107,9 +111,10 @@ namespace RabbitMqAsyncPublisher
                 {
                     try
                     {
-                        Console.WriteLine($" >> Publising#{i} ...");
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Publishing#{i} ...");
                         var properties = model.CreateBasicProperties();
                         properties.Persistent = true;
+                        Console.WriteLine($" ** [{Thread.CurrentThread.ManagedThreadId}] Next seqno: {model.NextPublishSeqNo}");
                         publisher.PublishUnsafeAsync(
                                 "",
                                 QueueName,
@@ -117,11 +122,11 @@ namespace RabbitMqAsyncPublisher
                                 properties,
                                 CancellationToken.None)
                             .Wait();
-                        Console.WriteLine($" >> Published#{i}");
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Published#{i}");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($" >> Failed#{i} => {ex.GetType().Name}");
+                        Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Failed#{i} => {ex.GetType().Name}");
                     }
 
                     Thread.Sleep(5000);

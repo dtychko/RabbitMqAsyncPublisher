@@ -168,6 +168,9 @@ namespace RabbitMqAsyncPublisher
 
                 TaskCompletionSource<bool> publishTaskCompletionSource;
 
+                // Lock here is used to synchronize Publish calls, which can come from different threads,
+                // with RabbitMQ lifecycle events (Ack, Nack, Shutdown, etc.), which are handled on a single thread.
+                // If we don't do that we can have race conditions when some tasks are not cleared on shutdown.
                 // TODO: think about replacing with kind of PriorityLock (PrioritySemaphore)
                 // TODO: in order to process model events with higher priority than publish requests
                 lock (_taskCompletionSourceRegistry)
