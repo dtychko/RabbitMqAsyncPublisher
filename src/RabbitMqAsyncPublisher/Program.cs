@@ -73,16 +73,24 @@ namespace RabbitMqAsyncPublisher
             ThreadPool.SetMinThreads(100, 100);
 
             var connectionFactory = new ConnectionFactory
-                {Uri = RabbitMqUri, AutomaticRecoveryEnabled = false, ClientProvidedName = "rabbitmq-publish-tests"};
+            {
+                Uri = RabbitMqUri, AutomaticRecoveryEnabled = false, ClientProvidedName = "rabbitmq-publish-tests",
+                RequestedHeartbeat = TimeSpan.Zero
+            };
 
             using (var autoRecovery = new AutoRecovery(
                 () => connectionFactory.CreateConnection(),
-                new Func<IConnection, IDisposable>[] {CreateTestComponent},
-                TimeSpan.FromMilliseconds(3000)))
+                new Func<IConnection, IDisposable>[]
+                {
+                    CreateTestComponent,
+                    conn => new AutoRecoveryConnectionHealthCheck(conn, TimeSpan.FromSeconds(3))
+                },
+                _ => TimeSpan.FromSeconds(3),
+                new AutoRecoveryConsoleDiagnostics()))
             {
                 autoRecovery.Start();
 
-                Thread.Sleep(60000);
+                Thread.Sleep(120000);
             }
         }
 

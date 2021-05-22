@@ -75,6 +75,8 @@
         <Compile Include="AsyncPublisherWithBuffer.cs" />
         <Compile Include="AsyncPublisherWithRetries.cs" />
         <Compile Include="AutoRecovery.cs" />
+        <Compile Include="AutoRecoveryConnectionHealthCheck.cs" />
+        <Compile Include="AutoRecoveryDiagnostics.cs" />
         <Compile Include="Diagnostics.cs" />
         <Compile Include="Program.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />

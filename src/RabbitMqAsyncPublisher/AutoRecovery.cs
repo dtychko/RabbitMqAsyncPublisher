@@ -8,12 +8,25 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
+    using static DiagnosticsUtils;
+
+    // TODO: integrate time-based connection check and re-init
+    // TODO:
+    // TODO: could be implemented as external component,
+    // TODO: that periodically creates a model on the current connection,
+    // TODO: if model can't be created then current connection should be explicitly closed,
+    // TODO: see AutoRecoveryConnectionHealthCheck implementation
+    // TODO:
+    // TODO: perhaps we just need to rely on default connection heartbeat mechanism
+
     public class AutoRecovery : IDisposable
     {
         private readonly Func<IConnection> _createConnection;
         private readonly IReadOnlyList<Func<IConnection, IDisposable>> _componentFactories;
-        private readonly TimeSpan _reconnectDelay;
+        private readonly Func<int, Task> _reconnectDelay;
+        private readonly IAutoRecoveryDiagnostics _diagnostics;
         private readonly SemaphoreSlim _connectionSemaphore = new SemaphoreSlim(1, 1);
+        private string _currentSessionId;
         private IConnection _currentConnection;
         private IReadOnlyList<IDisposable> _currentComponents;
         private volatile int _disposed;
@@ -22,31 +35,51 @@ namespace RabbitMqAsyncPublisher
             Func<IConnection> createConnection,
             IReadOnlyList<Func<IConnection, IDisposable>> componentFactories,
             TimeSpan reconnectDelay)
+            : this(createConnection, componentFactories, _ => reconnectDelay, AutoRecoveryDiagnostics.NoDiagnostics)
+        {
+        }
+
+        public AutoRecovery(
+            Func<IConnection> createConnection,
+            IReadOnlyList<Func<IConnection, IDisposable>> componentFactories,
+            Func<int, TimeSpan> reconnectDelay,
+            IAutoRecoveryDiagnostics diagnostics)
+            : this(createConnection, componentFactories,
+                retryNumber => Task.Delay(reconnectDelay(retryNumber)), diagnostics)
+        {
+        }
+
+        internal AutoRecovery(
+            Func<IConnection> createConnection,
+            IReadOnlyList<Func<IConnection, IDisposable>> componentFactories,
+            Func<int, Task> reconnectDelay,
+            IAutoRecoveryDiagnostics diagnostics)
         {
             _createConnection = createConnection;
             _componentFactories = componentFactories;
             _reconnectDelay = reconnectDelay;
+            _diagnostics = diagnostics;
         }
 
         public async void Start()
         {
             try
             {
-                await ConnectAsync();
+                await ConnectAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unable to start recovery loop: {ex}");
+                TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to start connect loop.", ex);
             }
         }
 
         private async Task ConnectAsync()
         {
-            await _connectionSemaphore.WaitAsync();
+            await _connectionSemaphore.WaitAsync().ConfigureAwait(false);
 
             try
             {
-                await ConnectThreadUnsafeAsync();
+                await ConnectThreadUnsafeAsync().ConfigureAwait(false);
             }
             finally
             {
@@ -56,82 +89,100 @@ namespace RabbitMqAsyncPublisher
 
         private async Task ConnectThreadUnsafeAsync()
         {
-            // Make sure that previous connection is disposed together with its components
+            // Make sure that previous connection is disposed together with its components.
             CleanUpThreadUnsafe();
+
+            _currentSessionId = Guid.NewGuid().ToString("D");
 
             for (var attempt = 1; _disposed == 0; attempt += 1)
             {
-                Console.WriteLine($"Connect attempt#{attempt}");
+                TrackSafe(_diagnostics.TrackConnectAttemptStarted, _currentSessionId, attempt);
                 var stopwatch = Stopwatch.StartNew();
 
                 try
                 {
                     _currentConnection = CreateConnection();
-                    _currentComponents = InitializeComponents(_currentConnection);
+                    _currentComponents = CreateComponents(_currentConnection, _componentFactories);
+                    SubscribeOnConnectionShutdown(_currentConnection);
 
-                    // 1. According to "RabbitMQ.Client" reference,
-                    // "IConnection.ConnectionShutdown" event will be fired immediately if connection is already closed
-                    // 2. Subscribing on "IConnection.ConnectionShutdown" throws if connection is already disposed
-                    try
-                    {
-                        _currentConnection.ConnectionShutdown += OnConnectionShutdown;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Unable to subscribe on IConnection.ConnectionShutdown event: {ex}");
-                        throw;
-                    }
+                    // According to "RabbitMQ.Client" reference,
+                    // "IConnection.ConnectionShutdown" event will be fired immediately if connection is already closed,
+                    // as results we don't need to perform an additional check
+                    // that connection is still open after subscribing on the event.
 
-                    Console.WriteLine($"Connect attempt#{attempt} succeeded in {stopwatch.ElapsedMilliseconds} ms");
+                    TrackSafe(_diagnostics.TrackConnectAttemptSucceeded, _currentSessionId, attempt, stopwatch.Elapsed);
                     return;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    Console.WriteLine($"Connect attempt#{attempt} failed in {stopwatch.ElapsedMilliseconds} ms");
+                    TrackSafe(_diagnostics.TrackConnectAttemptFailed, _currentSessionId, attempt, stopwatch.Elapsed,
+                        ex);
                     CleanUpThreadUnsafe();
-                    await Task.Delay(_reconnectDelay);
+
+                    await _reconnectDelay(attempt).ConfigureAwait(false);
                 }
+            }
+        }
+
+        private void SubscribeOnConnectionShutdown(IConnection connection)
+        {
+            try
+            {
+                connection.ConnectionShutdown += OnConnectionShutdown;
+            }
+            catch (Exception ex)
+            {
+                // Subscribing on "IConnection.ConnectionShutdown" throws at least when connection is already disposed.
+
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    "Unable to subscribe on IConnection.ConnectionShutdown event.", ex);
+                throw;
             }
         }
 
         private IConnection CreateConnection()
         {
+            var stopwatch = Stopwatch.StartNew();
+
             try
             {
                 var connection = _createConnection();
 
                 if (connection is null)
                 {
-                    throw new Exception("Acquired connection but it is null");
+                    throw new Exception("Acquired connection but it is null.");
                 }
 
                 if (connection is IAutorecoveringConnection)
                 {
-                    throw new Exception("Auto recovering connection is not supported");
+                    throw new Exception("Auto recovering connection is not supported.");
                 }
 
-                // TODO: Log success
-
+                TrackSafe(_diagnostics.TrackCreateConnectionSucceeded, _currentSessionId, stopwatch.Elapsed);
                 return connection;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Unable to acquire connection: {ex}");
+                TrackSafe(_diagnostics.TrackCreateConnectionFailed, _currentSessionId, stopwatch.Elapsed, ex);
                 throw;
             }
         }
 
-        private IReadOnlyList<IDisposable> InitializeComponents(IConnection connection)
+        private IReadOnlyList<IDisposable> CreateComponents(
+            IConnection connection,
+            IReadOnlyList<Func<IConnection, IDisposable>> componentFactories)
         {
             var components = new List<IDisposable>();
+            var stopwatch = Stopwatch.StartNew();
 
-            foreach (var componentFactory in _componentFactories)
+            for (var i = 0; i < componentFactories.Count; i++)
             {
                 try
                 {
-                    // 1. Make sure that connection is still open,
+                    // Make sure that connection is still open,
                     // otherwise throws exception instead of trying to create a component.
-                    // 2. Use "Interlocked.Exchange" to make sure that "connection.CloseReason"
+
+                    // Use "Interlocked.Exchange" to make sure that "connection.CloseReason"
                     // wouldn't be inlined in places where "closeReason" local variable is accessed,
                     // because "connection.CloseReason" could be changed concurrently
                     // and could have different values in different points in time.
@@ -142,40 +193,48 @@ namespace RabbitMqAsyncPublisher
                         throw new AlreadyClosedException(closeReason);
                     }
 
-                    components.Add(componentFactory(connection));
+                    components.Add(componentFactories[i](connection));
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Unable to initialize component: {ex}");
+                    TrackSafe(_diagnostics.TrackUnexpectedException, $"Unable to create component#{i}.", ex);
 
-                    // Stop creating components, because connection is already closed
+                    // Stop creating components if connection is already closed.
                     if (!connection.IsOpen)
                     {
                         break;
                     }
 
-                    // Otherwise continue, because we don't want to fail all if one component fails with unexpected exception
+                    // Otherwise continue, because we don't want to fail all if one component fails with unexpected exception.
                 }
             }
 
-            // TODO: Log success
-
+            TrackSafe(_diagnostics.TrackCreateComponentsCompleted, _currentSessionId, components.Count,
+                componentFactories.Count, stopwatch.Elapsed);
             return components;
         }
 
         private void CleanUpThreadUnsafe()
         {
+            if (_currentConnection is null && _currentComponents is null)
+            {
+                return;
+            }
+
+            TrackSafe(_diagnostics.TrackCleanUpStarted, _currentSessionId);
+            var stopwatch = Stopwatch.StartNew();
+
             if (!(_currentComponents is null))
             {
-                foreach (var component in _currentComponents)
+                for (var i = 0; i < _currentComponents.Count; i++)
                 {
                     try
                     {
-                        component.Dispose();
+                        _currentComponents[i].Dispose();
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Unable to dispose component: {ex}");
+                        TrackSafe(_diagnostics.TrackUnexpectedException, $"Unable to dispose component#{i}.", ex);
                     }
                 }
 
@@ -184,14 +243,34 @@ namespace RabbitMqAsyncPublisher
 
             if (!(_currentConnection is null))
             {
-                // Unsubscribing from "IConnection.ConnectionShutdown" throws if connection is already disposed
                 try
                 {
                     _currentConnection.ConnectionShutdown -= OnConnectionShutdown;
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Unable to unsubscribe from IConnection.ConnectionShutdown event: {ex}");
+                    // Unsubscribing from "IConnection.ConnectionShutdown" throws at least when connection is already disposed.
+
+                    TrackSafe(_diagnostics.TrackUnexpectedException,
+                        "Unable to unsubscribe from IConnection.ConnectionShutdown event.", ex);
+                }
+
+                // "IConnection.Dispose()" method implementation calls "IConnection.Close()" with infinite timeout
+                // that is used for waiting an internal "ManualResetEventSlim" instance,
+                // as result dispose method call could hang for unpredictable time.
+                // To prevent this hanging happen
+                // we should call "IConnection.Close()" method with some finite timeout first,
+                // only after that "IConnection.Dispose() could be safely called.
+
+                try
+                {
+                    // Make sure that current connection is closed.
+                    // Pass "TimeSpan.Zero" as a non-infinite timeout.
+                    _currentConnection.Close(TimeSpan.Zero);
+                }
+                catch (Exception ex)
+                {
+                    TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to close current connection.", ex);
                 }
 
                 try
@@ -200,23 +279,21 @@ namespace RabbitMqAsyncPublisher
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Unable to dispose current connection: {ex}");
+                    TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to dispose current connection.", ex);
                 }
 
                 _currentConnection = null;
             }
+
+            TrackSafe(_diagnostics.TrackCleanUpCompleted, _currentSessionId, stopwatch.Elapsed);
         }
 
-        private void OnConnectionShutdown(object sender, ShutdownEventArgs e)
+        private void OnConnectionShutdown(object sender, ShutdownEventArgs args)
         {
-            Task.Run(() =>
-            {
-                Console.WriteLine("Connection is closed");
-                return ConnectAsync();
-            });
-        }
+            TrackSafe(_diagnostics.TrackConnectionClosed, args);
 
-        // TODO: integrate time-based connection check and re-init
+            Task.Run(ConnectAsync);
+        }
 
         public void Dispose()
         {
@@ -224,6 +301,9 @@ namespace RabbitMqAsyncPublisher
             {
                 return;
             }
+
+            TrackSafe(_diagnostics.TrackDisposeStarted);
+            var stopwatch = Stopwatch.StartNew();
 
             _connectionSemaphore.Wait();
 
@@ -236,6 +316,8 @@ namespace RabbitMqAsyncPublisher
                 _connectionSemaphore.Release();
                 _connectionSemaphore.Dispose();
             }
+
+            TrackSafe(_diagnostics.TrackDisposeCompleted, stopwatch.Elapsed);
         }
     }
 }
