@@ -10,8 +10,8 @@ namespace RabbitMqAsyncPublisher
 {
     public class AutoRecovery : IDisposable
     {
-        private readonly Func<IConnection> _connect;
-        private readonly IReadOnlyList<Func<IConnection, IDisposable>> _componentRegistrations;
+        private readonly Func<IConnection> _createConnection;
+        private readonly IReadOnlyList<Func<IConnection, IDisposable>> _componentFactories;
         private readonly TimeSpan _reconnectDelay;
         private readonly SemaphoreSlim _connectionSemaphore = new SemaphoreSlim(1, 1);
         private IConnection _currentConnection;
@@ -19,12 +19,12 @@ namespace RabbitMqAsyncPublisher
         private volatile int _disposed;
 
         public AutoRecovery(
-            Func<IConnection> connect,
-            IReadOnlyList<Func<IConnection, IDisposable>> componentRegistrations,
+            Func<IConnection> createConnection,
+            IReadOnlyList<Func<IConnection, IDisposable>> componentFactories,
             TimeSpan reconnectDelay)
         {
-            _connect = connect;
-            _componentRegistrations = componentRegistrations;
+            _createConnection = createConnection;
+            _componentFactories = componentFactories;
             _reconnectDelay = reconnectDelay;
         }
 
@@ -59,20 +59,15 @@ namespace RabbitMqAsyncPublisher
             // Make sure that previous connection is disposed together with its components
             CleanUpThreadUnsafe();
 
-            for (var attempt = 1;; attempt += 1)
+            for (var attempt = 1; _disposed == 0; attempt += 1)
             {
-                if (_disposed == 1)
-                {
-                    return;
-                }
-
                 Console.WriteLine($"Connect attempt#{attempt}");
                 var stopwatch = Stopwatch.StartNew();
 
                 try
                 {
-                    _currentConnection = CreateConnectionThreadUnsafe();
-                    _currentComponents = InitializeComponentsThreadUnsafe(_currentConnection);
+                    _currentConnection = CreateConnection();
+                    _currentComponents = InitializeComponents(_currentConnection);
 
                     // 1. According to "RabbitMQ.Client" reference,
                     // "IConnection.ConnectionShutdown" event will be fired immediately if connection is already closed
@@ -88,22 +83,22 @@ namespace RabbitMqAsyncPublisher
                     }
 
                     Console.WriteLine($"Connect attempt#{attempt} succeeded in {stopwatch.ElapsedMilliseconds} ms");
-
                     return;
                 }
                 catch (Exception)
                 {
+                    Console.WriteLine($"Connect attempt#{attempt} failed in {stopwatch.ElapsedMilliseconds} ms");
                     CleanUpThreadUnsafe();
                     await Task.Delay(_reconnectDelay);
                 }
             }
         }
 
-        private IConnection CreateConnectionThreadUnsafe()
+        private IConnection CreateConnection()
         {
             try
             {
-                var connection = _connect();
+                var connection = _createConnection();
 
                 if (connection is null)
                 {
@@ -115,6 +110,8 @@ namespace RabbitMqAsyncPublisher
                     throw new Exception("Auto recovering connection is not supported");
                 }
 
+                // TODO: Log success
+
                 return connection;
             }
             catch (Exception ex)
@@ -124,30 +121,44 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private IReadOnlyList<IDisposable> InitializeComponentsThreadUnsafe(IConnection connection)
+        private IReadOnlyList<IDisposable> InitializeComponents(IConnection connection)
         {
             var components = new List<IDisposable>();
 
-            foreach (var registration in _componentRegistrations)
+            foreach (var componentFactory in _componentFactories)
             {
                 try
                 {
+                    // 1. Make sure that connection is still open,
+                    // otherwise throws exception instead of trying to create a component.
+                    // 2. Use "Interlocked.Exchange" to make sure that "connection.CloseReason"
+                    // wouldn't be inlined in places where "closeReason" local variable is accessed,
+                    // because "connection.CloseReason" could be changed concurrently
+                    // and could have different values in different points in time.
                     ShutdownEventArgs closeReason = null;
                     Interlocked.Exchange(ref closeReason, connection.CloseReason);
-
                     if (!(closeReason is null))
                     {
                         throw new AlreadyClosedException(closeReason);
                     }
 
-                    components.Add(registration(connection));
+                    components.Add(componentFactory(connection));
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Unable to initialize component: {ex}");
-                    // continue because we don't want to fail all if one component fails
+
+                    // Stop creating components, because connection is already closed
+                    if (!connection.IsOpen)
+                    {
+                        break;
+                    }
+
+                    // Otherwise continue, because we don't want to fail all if one component fails with unexpected exception
                 }
             }
+
+            // TODO: Log success
 
             return components;
         }
@@ -200,7 +211,7 @@ namespace RabbitMqAsyncPublisher
         {
             Task.Run(() =>
             {
-                Console.WriteLine("Connection Shutdown");
+                Console.WriteLine("Connection is closed");
                 return ConnectAsync();
             });
         }
