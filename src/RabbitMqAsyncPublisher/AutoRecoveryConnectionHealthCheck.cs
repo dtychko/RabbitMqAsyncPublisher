@@ -42,6 +42,7 @@ namespace RabbitMqAsyncPublisher
             catch (OperationCanceledException)
             {
                 // Health check loop is cancelled, just return.
+                Console.WriteLine($"[{nameof(AutoRecoveryConnectionHealthCheck)}] Health check loop cancelled");
                 return;
             }
             catch (Exception ex)

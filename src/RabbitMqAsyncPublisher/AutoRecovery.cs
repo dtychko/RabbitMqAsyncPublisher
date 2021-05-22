@@ -23,13 +23,14 @@ namespace RabbitMqAsyncPublisher
     {
         private readonly Func<IConnection> _createConnection;
         private readonly IReadOnlyList<Func<IConnection, IDisposable>> _componentFactories;
-        private readonly Func<int, Task> _reconnectDelay;
+        private readonly Func<int, CancellationToken, Task> _reconnectDelay;
         private readonly IAutoRecoveryDiagnostics _diagnostics;
         private readonly SemaphoreSlim _connectionSemaphore = new SemaphoreSlim(1, 1);
         private string _currentSessionId;
         private IConnection _currentConnection;
         private IReadOnlyList<IDisposable> _currentComponents;
-        private volatile int _disposed;
+        private readonly CancellationTokenSource _cancellationTokenSource;
+        private readonly CancellationToken _cancellationToken;
 
         public AutoRecovery(
             Func<IConnection> createConnection,
@@ -45,27 +46,42 @@ namespace RabbitMqAsyncPublisher
             Func<int, TimeSpan> reconnectDelay,
             IAutoRecoveryDiagnostics diagnostics)
             : this(createConnection, componentFactories,
-                retryNumber => Task.Delay(reconnectDelay(retryNumber)), diagnostics)
+                (retryNumber, cancellationToken) => Task.Delay(reconnectDelay(retryNumber), cancellationToken),
+                diagnostics)
         {
         }
 
         internal AutoRecovery(
             Func<IConnection> createConnection,
             IReadOnlyList<Func<IConnection, IDisposable>> componentFactories,
-            Func<int, Task> reconnectDelay,
+            Func<int, CancellationToken, Task> reconnectDelay,
             IAutoRecoveryDiagnostics diagnostics)
         {
             _createConnection = createConnection;
             _componentFactories = componentFactories;
             _reconnectDelay = reconnectDelay;
             _diagnostics = diagnostics;
+
+            _cancellationTokenSource = new CancellationTokenSource();
+            _cancellationToken = _cancellationTokenSource.Token;
         }
 
-        public async void Start()
+        public void Start()
+        {
+            // TODO: Make sure that "Start()" could be called only once
+
+            Connect();
+        }
+
+        private async void Connect()
         {
             try
             {
                 await ConnectAsync().ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // ignore
             }
             catch (Exception ex)
             {
@@ -75,7 +91,7 @@ namespace RabbitMqAsyncPublisher
 
         private async Task ConnectAsync()
         {
-            await _connectionSemaphore.WaitAsync().ConfigureAwait(false);
+            await _connectionSemaphore.WaitAsync(_cancellationToken).ConfigureAwait(false);
 
             try
             {
@@ -94,7 +110,7 @@ namespace RabbitMqAsyncPublisher
 
             _currentSessionId = Guid.NewGuid().ToString("D");
 
-            for (var attempt = 1; _disposed == 0; attempt += 1)
+            for (var attempt = 1; !_cancellationToken.IsCancellationRequested; attempt += 1)
             {
                 TrackSafe(_diagnostics.TrackConnectAttemptStarted, _currentSessionId, attempt);
                 var stopwatch = Stopwatch.StartNew();
@@ -119,24 +135,8 @@ namespace RabbitMqAsyncPublisher
                         ex);
                     CleanUpThreadUnsafe();
 
-                    await _reconnectDelay(attempt).ConfigureAwait(false);
+                    await _reconnectDelay(attempt, _cancellationToken).ConfigureAwait(false);
                 }
-            }
-        }
-
-        private void SubscribeOnConnectionShutdown(IConnection connection)
-        {
-            try
-            {
-                connection.ConnectionShutdown += OnConnectionShutdown;
-            }
-            catch (Exception ex)
-            {
-                // Subscribing on "IConnection.ConnectionShutdown" throws at least when connection is already disposed.
-
-                TrackSafe(_diagnostics.TrackUnexpectedException,
-                    "Unable to subscribe on IConnection.ConnectionShutdown event.", ex);
-                throw;
             }
         }
 
@@ -214,6 +214,29 @@ namespace RabbitMqAsyncPublisher
             return components;
         }
 
+        private void SubscribeOnConnectionShutdown(IConnection connection)
+        {
+            try
+            {
+                connection.ConnectionShutdown += OnConnectionShutdown;
+            }
+            catch (Exception ex)
+            {
+                // Subscribing on "IConnection.ConnectionShutdown" throws at least when connection is already disposed.
+
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    "Unable to subscribe on IConnection.ConnectionShutdown event.", ex);
+                throw;
+            }
+        }
+
+        private void OnConnectionShutdown(object sender, ShutdownEventArgs args)
+        {
+            TrackSafe(_diagnostics.TrackConnectionClosed, args);
+
+            Task.Run(Connect, _cancellationToken);
+        }
+
         private void CleanUpThreadUnsafe()
         {
             if (_currentConnection is null && _currentComponents is null)
@@ -288,23 +311,23 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackCleanUpCompleted, _currentSessionId, stopwatch.Elapsed);
         }
 
-        private void OnConnectionShutdown(object sender, ShutdownEventArgs args)
-        {
-            TrackSafe(_diagnostics.TrackConnectionClosed, args);
-
-            Task.Run(ConnectAsync);
-        }
-
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 1)
+            lock (_cancellationTokenSource)
             {
-                return;
+                if (_cancellationTokenSource.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _cancellationTokenSource.Cancel();
+                _cancellationTokenSource.Dispose();
             }
 
             TrackSafe(_diagnostics.TrackDisposeStarted);
             var stopwatch = Stopwatch.StartNew();
 
+            // ReSharper disable once MethodSupportsCancellation
             _connectionSemaphore.Wait();
 
             try

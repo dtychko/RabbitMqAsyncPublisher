@@ -90,8 +90,13 @@ namespace RabbitMqAsyncPublisher
             {
                 autoRecovery.Start();
 
-                Thread.Sleep(120000);
+                Thread.Sleep(15000);
+                Console.WriteLine("DISPOSING AUTO_RECOVERY");
             }
+
+            Console.WriteLine("DISPOSED AUTO_RECOVERY");
+            Thread.Sleep(5000);
+            Console.WriteLine("EXIT");
         }
 
         private static IDisposable CreateTestComponent(IConnection connection)
