@@ -280,6 +280,12 @@ namespace RabbitMqAsyncPublisher
             return taskCompletionSource;
         }
 
+        public TaskCompletionSource<bool> Register(ulong deliveryTag, TaskCompletionSource<bool> taskCompletionSource)
+        {
+            _sources[deliveryTag] = new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag));
+            return taskCompletionSource;
+        }
+
         public bool TryRemoveSingle(ulong deliveryTag, out TaskCompletionSource<bool> source)
         {
             if (_sources.TryGetValue(deliveryTag, out var entry))
