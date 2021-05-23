@@ -162,6 +162,8 @@ namespace RabbitMqAsyncPublisher
             _diagnostics.TrackPublishUnsafe(args);
             var stopwatch = Stopwatch.StartNew();
 
+            ulong seqNo;
+
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -180,7 +182,7 @@ namespace RabbitMqAsyncPublisher
                         throw new AlreadyClosedException(_shutdownEventArgs);
                     }
 
-                    var seqNo = Model.NextPublishSeqNo;
+                    seqNo = Model.NextPublishSeqNo;
                     Model.BasicPublish(exchange, routingKey, properties, body);
                     publishTaskCompletionSource = _taskCompletionSourceRegistry.Register(seqNo);
 
@@ -191,7 +193,15 @@ namespace RabbitMqAsyncPublisher
 
                 using (cancellationToken.Register(() =>
                     // ReSharper disable once MethodSupportsCancellation
-                    Task.Run(() => publishTaskCompletionSource.TrySetCanceled(cancellationToken))))
+                    Task.Run(() =>
+                    {
+                        lock (_taskCompletionSourceRegistry)
+                        {
+                            _taskCompletionSourceRegistry.TryRemoveSingle(seqNo, out _);
+                        }
+
+                        return publishTaskCompletionSource.TrySetCanceled(cancellationToken);
+                    })))
                 {
                     var acknowledged = await publishTaskCompletionSource.Task;
                     _diagnostics.TrackPublishUnsafeCompleted(args, stopwatch.Elapsed, acknowledged);
