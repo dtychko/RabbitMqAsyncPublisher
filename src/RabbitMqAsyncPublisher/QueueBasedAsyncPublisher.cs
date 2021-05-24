@@ -66,7 +66,7 @@ namespace RabbitMqAsyncPublisher
             }
             catch
             {
-                // Ignore
+                //TODO: add logging/diagnostics
             }
         }
 
@@ -85,7 +85,7 @@ namespace RabbitMqAsyncPublisher
             }
             catch
             {
-                // Ignore
+                //TODO: add logging/diagnostics
             }
         }
 
@@ -95,39 +95,49 @@ namespace RabbitMqAsyncPublisher
             {
                 var cancellationToke = publishQueueItem.CancellationToken;
                 var taskCompletionSource = publishQueueItem.TaskCompletionSource;
-
-                if (cancellationToke.IsCancellationRequested)
+                ulong seqNo;
+                try
                 {
-                    Task.Run(() => taskCompletionSource.TrySetCanceled());
+                    if (cancellationToke.IsCancellationRequested)
+                    {
+                        Task.Run(() => taskCompletionSource.TrySetCanceled());
+                    }
+
+                    // TODO: Support delayed cancellation
+                    // TODO: cancellationToke.Register(() => taskCompletionSource.TrySetCanceled());
+
+                    if (_isDisposed == 1)
+                    {
+                        Task.Run(() =>
+                            taskCompletionSource.TrySetException(
+                                new ObjectDisposedException(nameof(QueueBasedAsyncPublisher))));
+                        continue;
+                    }
+
+                    if (IsModelClosed(out var shutdownEventArgs))
+                    {
+                        Task.Run(() => taskCompletionSource.TrySetException(new AlreadyClosedException(shutdownEventArgs)));
+                        continue;
+                    }
+
+                    seqNo = Model.NextPublishSeqNo;
                 }
-
-                // TODO: Support delayed cancellation
-                // TODO: cancellationToke.Register(() => taskCompletionSource.TrySetCanceled());
-
-                if (_isDisposed == 1)
+                catch (Exception ex)
                 {
-                    Task.Run(() =>
-                        taskCompletionSource.TrySetException(
-                            new ObjectDisposedException(nameof(QueueBasedAsyncPublisher))));
+                    // TODO: add logging/diagnostics
+                    Task.Run(() => taskCompletionSource.TrySetException(ex));
                     continue;
                 }
-
-                if (IsModelClosed(out var shutdownEventArgs))
-                {
-                    Task.Run(() => taskCompletionSource.TrySetException(new AlreadyClosedException(shutdownEventArgs)));
-                    continue;
-                }
-
-                var seqNo = Model.NextPublishSeqNo;
-                RegisterTaskCompletionSource(seqNo, taskCompletionSource);
 
                 try
                 {
+                    RegisterTaskCompletionSource(seqNo, taskCompletionSource);
                     Model.BasicPublish(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
                         publishQueueItem.Properties, publishQueueItem.Body);
                 }
                 catch (Exception ex)
                 {
+                    // TODO: add logging/diagnostics
                     TryRemoveSingleTaskCompletionSource(seqNo, out _);
                     Task.Run(() => taskCompletionSource.TrySetException(ex));
                 }

@@ -55,10 +55,13 @@ namespace Tests
                     {
                         publishTasks.Add(Task.Run(() =>
                             {
-                                var body = Encoding.UTF8.GetBytes($"Message #{Interlocked.Increment(ref counter)}");
+                                var messageIndex = Interlocked.Increment(ref counter);
+                                var messageTag = $"Message #{messageIndex}";
+                                var body = Encoding.UTF8.GetBytes(messageTag);
+                                var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
 
                                 return publisher.PublishUnsafeAsync(
-                                    "test-exchange", "no-routing", body, new TestBasicProperties(), cancellationToken);
+                                    "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
                             },
                             cancellationToken));
                     }
@@ -231,7 +234,7 @@ namespace Tests
         {
             return new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
                 new AsyncPublisherWithRetries(
-                    new AsyncPublisher(model, diagnostics),
+                    new QueueBasedAsyncPublisher(model),
                     retryDelay, diagnostics));
         }
 

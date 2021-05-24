@@ -527,7 +527,8 @@ namespace Tests
         }
 
         int IModel.ChannelNumber => throw new NotImplementedException();
-        ShutdownEventArgs IModel.CloseReason => throw new NotImplementedException();
+
+        ShutdownEventArgs IModel.CloseReason => _currentShutdown;
 
         IBasicConsumer IModel.DefaultConsumer { get; set; }
 
