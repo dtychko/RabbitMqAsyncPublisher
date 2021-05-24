@@ -42,13 +42,13 @@ namespace RabbitMqAsyncPublisher
         private void OnBasicAcks(object sender, BasicAckEventArgs e)
         {
             _ackQueue.Enqueue(new AckQueueItem(e.DeliveryTag, e.Multiple, true));
-            _ackEvent.Set();
+            _ackEvent.SetAsync();
         }
 
         private void OnBasicNacks(object sender, BasicNackEventArgs e)
         {
             _ackQueue.Enqueue(new AckQueueItem(e.DeliveryTag, e.Multiple, false));
-            _ackEvent.Set();
+            _ackEvent.SetAsync();
         }
 
         private async void StartPublishLoop()
@@ -182,7 +182,7 @@ namespace RabbitMqAsyncPublisher
                 _publishQueue.Enqueue(queueItem);
             }
 
-            _publishEvent.Set();
+            _publishEvent.SetAsync();
 
             return taskCompletionSource.Task;
         }
@@ -206,10 +206,7 @@ namespace RabbitMqAsyncPublisher
             Model.BasicAcks -= OnBasicAcks;
             Model.BasicNacks -= OnBasicNacks;
 
-            _publishEvent.Set();
-            _ackEvent.Set();
-
-            Task.WaitAll(_publishLoop, _ackLoop);
+            Task.WaitAll(_publishEvent.SetAsync(), _ackEvent.SetAsync(), _publishLoop, _ackLoop);
 
             foreach (var source in RemoveAllTaskCompletionSourcesUpTo(ulong.MaxValue))
             {

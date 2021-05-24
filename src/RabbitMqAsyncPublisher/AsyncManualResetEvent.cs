@@ -38,6 +38,17 @@ namespace RabbitMqAsyncPublisher
             _taskCompletionSource.TrySetResult(true);
         }
 
+        public Task SetAsync()
+        {
+            var capturedSource = _taskCompletionSource;
+            if (capturedSource.Task.IsCompleted)
+            {
+                return Task.CompletedTask;
+            }
+
+            return Task.Run(() => capturedSource.TrySetResult(true));
+        }
+
         public void Reset()
         {
             while (true)
