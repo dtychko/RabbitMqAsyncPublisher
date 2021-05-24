@@ -60,14 +60,14 @@ namespace RabbitMqAsyncPublisher
         private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
         private const string QueueName = "test_queue";
 
-        private const int MessageCount = 100;
-        private const int MessageSize = 1024 * 10000;
+        private const int MessageCount = 2000;
+        private const int MessageSize = 1024 * 100;
 
-        private const int NonAcknowledgedSizeLimit = 50;
+        private const int NonAcknowledgedSizeLimit = 10_000_000;
 
         private static int _counter;
 
-        public static void Main()
+        public static void Main34()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -147,7 +147,7 @@ namespace RabbitMqAsyncPublisher
                 // model.QueueDeclare(QueueName, true, false, false);
 
                 var publisher = AsyncPublisherDeclaringDecorator.Create(
-                    new AsyncPublisher(model),
+                    new QueueBasedAsyncPublisher(model),
                     AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
                 );
 
@@ -183,7 +183,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public static void Main2()
+        public static void Main()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
@@ -245,12 +245,12 @@ namespace RabbitMqAsyncPublisher
         {
             // var publisher = new AsyncRetryingPublisher(new AsyncPublisher(model, QueueName));
             var publisher = new AsyncPublisherAdapter<bool>(
-                new AsyncPublisherSyncDecorator<bool>(
+                // new AsyncPublisherSyncDecorator<bool>(
                     AsyncPublisherDeclaringDecorator.Create(
-                        new AsyncPublisher(model),
+                        new QueueBasedAsyncPublisher(model),
                         AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
-                    )
-                ),
+                    ),
+                // ),
                 "test_exchange",
                 "some topic"
             );
