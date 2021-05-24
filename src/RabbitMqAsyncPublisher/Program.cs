@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
+        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 2000;
@@ -67,41 +67,53 @@ namespace RabbitMqAsyncPublisher
 
         private static int _counter;
 
-        public static void Main34()
+        public static void Main()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
 
             var connectionFactory = new ConnectionFactory
             {
-                Uri = RabbitMqUri, AutomaticRecoveryEnabled = false, ClientProvidedName = "rabbitmq-publish-tests",
+                Uri = RabbitMqUri,
+                AutomaticRecoveryEnabled = false,
+                TopologyRecoveryEnabled = false,
+                ClientProvidedName = "rabbitmq-publish-tests",
                 RequestedHeartbeat = TimeSpan.Zero
             };
 
-            using (var autoRecovery = new AutoRecovery(
-                () => connectionFactory.CreateConnection(),
-                new Func<IConnection, IDisposable>[]
+            var diagnostics = new AutoRecoveryConsoleDiagnostics();
+            using (var autoRecovery = new AutoRecovery<AutoRecoveryResourceConnection>(
+                () => new AutoRecoveryResourceConnection(connectionFactory.CreateConnection()),
+                new Func<AutoRecoveryResourceConnection, IDisposable>[]
                 {
-                    CreateTestComponent,
-                    conn => new AutoRecoveryConnectionHealthCheck(conn, TimeSpan.FromSeconds(3))
+                    connection =>
+                    {
+                        var modelAutoRecovery = new AutoRecovery<AutoRecoveryResourceModel>(
+                            () => new AutoRecoveryResourceModel(connection.Value.CreateModel()),
+                            new Func<AutoRecoveryResourceModel, IDisposable>[]
+                            {
+                                model => new QueueBasedAsyncPublisher(model.Value)
+                            },
+                            _ => TimeSpan.FromSeconds(3),
+                            diagnostics);
+                        
+                        modelAutoRecovery.Start();
+                        return modelAutoRecovery;
+                    },
+                    conn => new AutoRecoveryConnectionHealthCheck(conn.Value, TimeSpan.FromSeconds(3)),
                 },
                 _ => TimeSpan.FromSeconds(3),
-                new AutoRecoveryConsoleDiagnostics()))
+                diagnostics))
             {
                 autoRecovery.Start();
 
-                Thread.Sleep(15000);
+                Thread.Sleep(3*60_000);
                 Console.WriteLine("DISPOSING AUTO_RECOVERY");
             }
 
             Console.WriteLine("DISPOSED AUTO_RECOVERY");
             Thread.Sleep(5000);
             Console.WriteLine("EXIT");
-        }
-
-        private static IDisposable CreateTestComponent(IConnection connection)
-        {
-            return new Disposable(() => { });
         }
 
         public static void Main43()
@@ -183,7 +195,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public static void Main()
+        public static void Main85()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
