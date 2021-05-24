@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
@@ -10,124 +11,60 @@ namespace RabbitMqAsyncPublisher
 {
     using static DiagnosticsUtils;
 
-    // TODO: integrate time-based connection check and re-init
-    // TODO:
-    // TODO: could be implemented as external component,
-    // TODO: that periodically creates a model on the current connection,
-    // TODO: if model can't be created then current connection should be explicitly closed,
-    // TODO: see AutoRecoveryConnectionHealthCheck implementation
-    // TODO:
-    // TODO: perhaps we just need to rely on default connection heartbeat mechanism
-
-    public interface IAutoRecoveryResource : IDisposable
+    public static class AutoRecovery
     {
-        ShutdownEventArgs CloseReason { get; }
-
-        event EventHandler<ShutdownEventArgs> Shutdown;
-    }
-
-    public class AutoRecoveryResourceConnection : IAutoRecoveryResource
-    {
-        public AutoRecoveryResourceConnection(IConnection connection)
+        public static AutoRecovery<AutoRecoveryResourceConnection> Connection(
+            IConnectionFactory connectionFactory,
+            Func<int, TimeSpan> retryDelay,
+            IAutoRecoveryDiagnostics diagnostics,
+            params Func<IConnection, IDisposable>[] componentFactories)
         {
-            if (connection is null)
-            {
-                throw new ArgumentNullException(nameof(connection));
-            }
-
-            if (connection is IAutorecoveringConnection)
-            {
-                throw new ArgumentException("Auto recovering connection is not supported.", nameof(connection));
-            }
-
-            Value = connection;
+            return new AutoRecovery<AutoRecoveryResourceConnection>(
+                () => new AutoRecoveryResourceConnection(connectionFactory.CreateConnection(), diagnostics),
+                componentFactories
+                    .Select(factory =>
+                        (Func<AutoRecoveryResourceConnection, IDisposable>) (connection => factory(connection.Value)))
+                    .ToArray(),
+                retryDelay,
+                diagnostics
+            );
         }
 
-        public IConnection Value { get; }
-
-        public ShutdownEventArgs CloseReason => Value.CloseReason;
-
-        public event EventHandler<ShutdownEventArgs> Shutdown
+        public static AutoRecovery<AutoRecoveryResourceModel> Model(
+            IConnection connection,
+            Func<int, TimeSpan> retryDelay,
+            IAutoRecoveryDiagnostics diagnostics,
+            params Func<IModel, IDisposable>[] componentFactories)
         {
-            add => Value.ConnectionShutdown += value;
-            remove => Value.ConnectionShutdown -= value;
-        }
-
-        public void Dispose()
-        {
-            if (Value.CloseReason is null)
-            {
-                // "IConnection.Dispose()" method implementation calls "IConnection.Close()" with infinite timeout
-                // that is used for waiting an internal "ManualResetEventSlim" instance,
-                // as result dispose method call could hang for unpredictable time.
-                // To prevent this hanging happen
-                // we should call "IConnection.Close()" method with some finite timeout first,
-                // only after that "IConnection.Dispose() could be safely called.
-                // Make sure that current connection is closed.
-                // Pass "TimeSpan.Zero" as a non-infinite timeout.
-                try
-                {
-                    Value.Close(TimeSpan.Zero);
-                }
-                catch (Exception)
-                {
-                    // TODO: handle via unexpected diagnostics
-                }
-            }
-
-            Value.Dispose();
+            return new AutoRecovery<AutoRecoveryResourceModel>(
+                () => new AutoRecoveryResourceModel(connection.CreateModel(), diagnostics),
+                componentFactories
+                    .Select(factory =>
+                        (Func<AutoRecoveryResourceModel, IDisposable>) (model => factory(model.Value)))
+                    .ToArray(),
+                retryDelay,
+                diagnostics
+            );
         }
     }
 
-    public class AutoRecoveryResourceModel : IAutoRecoveryResource
+    public class AutoRecovery<TResource> : IDisposable where TResource : class, IAutoRecoveryResource
     {
-        public AutoRecoveryResourceModel(IModel model)
-        {
-            if (model is null)
-            {
-                throw new ArgumentNullException(nameof(model));
-            }
-
-            // TODO: would be great to ensure that model itself is not recoverable
-            // to avoid conflicts with RabbitMQ lib recovery behavior
-            // Unfortunately, can't do that with simple `model is IRecoverable` check because all models implement this interface
-
-            Value = model;
-        }
-
-        public IModel Value { get; }
-
-        public ShutdownEventArgs CloseReason => Value.CloseReason;
-
-        public event EventHandler<ShutdownEventArgs> Shutdown
-        {
-            add => Value.ModelShutdown += value;
-            remove => Value.ModelShutdown -= value;
-        }
-
-        public void Dispose()
-        {
-            Value.Dispose();
-        }
-    }
-
-    public class AutoRecovery<T> : IDisposable where T : class, IAutoRecoveryResource
-    {
-        private readonly Func<T> _createResource;
-        private readonly IReadOnlyList<Func<T, IDisposable>> _componentFactories;
+        private readonly Func<TResource> _createResource;
+        private readonly IReadOnlyList<Func<TResource, IDisposable>> _componentFactories;
         private readonly Func<int, CancellationToken, Task> _reconnectDelay;
         private readonly IAutoRecoveryDiagnostics _diagnostics;
         private readonly SemaphoreSlim _connectionSemaphore = new SemaphoreSlim(1, 1);
         private string _currentSessionId;
-        private T _currentResource;
+        private TResource _currentResource;
         private IReadOnlyList<IDisposable> _currentComponents;
         private readonly CancellationTokenSource _cancellationTokenSource;
         private readonly CancellationToken _cancellationToken;
-        private readonly string _resourceId;
+        private bool _isStarted;
 
         public AutoRecovery(
-            Func<T> createResource,
-            IReadOnlyList<Func<T, IDisposable>> componentFactories,
+            Func<TResource> createResource,
+            IReadOnlyList<Func<TResource, IDisposable>> componentFactories,
             Func<int, TimeSpan> reconnectDelay,
             IAutoRecoveryDiagnostics diagnostics = null)
             : this(createResource, componentFactories,
@@ -137,8 +74,8 @@ namespace RabbitMqAsyncPublisher
         }
 
         internal AutoRecovery(
-            Func<T> createResource,
-            IReadOnlyList<Func<T, IDisposable>> componentFactories,
+            Func<TResource> createResource,
+            IReadOnlyList<Func<TResource, IDisposable>> componentFactories,
             Func<int, CancellationToken, Task> reconnectDelay,
             IAutoRecoveryDiagnostics diagnostics)
         {
@@ -149,12 +86,24 @@ namespace RabbitMqAsyncPublisher
 
             _cancellationTokenSource = new CancellationTokenSource();
             _cancellationToken = _cancellationTokenSource.Token;
-            _resourceId = typeof(T).Name + "/" + Guid.NewGuid().ToString("D");
         }
 
         public void Start()
         {
-            // TODO: Make sure that "Start()" could be called only once
+            lock (_cancellationTokenSource)
+            {
+                if (_cancellationToken.IsCancellationRequested)
+                {
+                    throw new ObjectDisposedException(nameof(AutoRecovery<TResource>));
+                }
+
+                if (_isStarted)
+                {
+                    throw new InvalidOperationException("Already started.");
+                }
+
+                _isStarted = true;
+            }
 
             CreateResource();
         }
@@ -167,11 +116,11 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException)
             {
-                // ignore
+                // Ignore
             }
             catch (Exception ex)
             {
-                TrackSafe(_diagnostics.TrackUnexpectedException, _resourceId, "Unable to start connect loop.", ex);
+                TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to start create resource loop.", ex);
             }
         }
 
@@ -208,8 +157,8 @@ namespace RabbitMqAsyncPublisher
                     SubscribeOnResourceShutdown(_currentResource);
 
                     // According to "RabbitMQ.Client" reference,
-                    // "T.ConnectionShutdown" event will be fired immediately if connection is already closed,
-                    // as results we don't need to perform an additional check
+                    // "IConnection.ConnectionShutdown" and "IModel.ModelShutdown" events will be fired immediately
+                    // if connection is already closed, as results we don't need to perform an additional check
                     // that connection is still open after subscribing on the event.
 
                     TrackSafe(_diagnostics.TrackCreateResourceAttemptSucceeded, _currentSessionId, attempt,
@@ -228,7 +177,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private T CreateResourceInstance()
+        private TResource CreateResourceInstance()
         {
             var stopwatch = Stopwatch.StartNew();
 
@@ -237,7 +186,7 @@ namespace RabbitMqAsyncPublisher
                 var resource = _createResource();
                 if (resource is null)
                 {
-                    throw new Exception("Acquired resource but it is null.");
+                    throw new Exception("Created resource is null.");
                 }
 
                 TrackSafe(_diagnostics.TrackCreateResourceSucceeded, _currentSessionId, stopwatch.Elapsed);
@@ -251,8 +200,8 @@ namespace RabbitMqAsyncPublisher
         }
 
         private IReadOnlyList<IDisposable> CreateComponents(
-            T resource,
-            IReadOnlyList<Func<T, IDisposable>> componentFactories)
+            TResource resource,
+            IReadOnlyList<Func<TResource, IDisposable>> componentFactories)
         {
             var components = new List<IDisposable>();
             var stopwatch = Stopwatch.StartNew();
@@ -263,24 +212,16 @@ namespace RabbitMqAsyncPublisher
                 {
                     // Make sure that connection is still open,
                     // otherwise throws exception instead of trying to create a component.
-
-                    // Use "Interlocked.Exchange" to make sure that "connection.CloseReason"
-                    // wouldn't be inlined in places where "closeReason" local variable is accessed,
-                    // because "connection.CloseReason" could be changed concurrently
-                    // and could have different values in different points in time.
-                    ShutdownEventArgs closeReason = null;
-                    Interlocked.Exchange(ref closeReason, resource.CloseReason);
-                    if (!(closeReason is null))
+                    if (IsResourceClosed(resource, out var shutdownEventArgs))
                     {
-                        throw new AlreadyClosedException(closeReason);
+                        throw new AlreadyClosedException(shutdownEventArgs);
                     }
 
                     components.Add(componentFactories[i](resource));
                 }
                 catch (Exception ex)
                 {
-                    TrackSafe(_diagnostics.TrackUnexpectedException, _resourceId, $"Unable to create component#{i}.",
-                        ex);
+                    TrackSafe(_diagnostics.TrackUnexpectedException, $"Unable to create component#{i}.", ex);
 
                     // Stop creating components if connection/model/etc. is already closed.
                     if (resource.CloseReason != null)
@@ -297,7 +238,19 @@ namespace RabbitMqAsyncPublisher
             return components;
         }
 
-        private void SubscribeOnResourceShutdown(T resource)
+        private static bool IsResourceClosed(TResource resource, out ShutdownEventArgs shutdownEventArgs)
+        {
+            shutdownEventArgs = default;
+
+            // Use "Interlocked.Exchange" to make sure that "connection.CloseReason"
+            // wouldn't be inlined in places where "closeReason" local variable is accessed,
+            // because "connection.CloseReason" could be changed concurrently
+            // and could have different values in different points in time.
+            Interlocked.Exchange(ref shutdownEventArgs, resource.CloseReason);
+            return !(shutdownEventArgs is null);
+        }
+
+        private void SubscribeOnResourceShutdown(TResource resource)
         {
             try
             {
@@ -305,18 +258,15 @@ namespace RabbitMqAsyncPublisher
             }
             catch (Exception ex)
             {
-                // Subscribing on "T.ConnectionShutdown" throws at least when connection is already disposed.
-
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    _resourceId, "Unable to subscribe on Shutdown event.", ex);
+                    "Unable to subscribe on IAutoRecoveryResource.Shutdown event.", ex);
                 throw;
             }
         }
 
         private void OnResourceShutdown(object sender, ShutdownEventArgs args)
         {
-            TrackSafe(_diagnostics.TrackResourceClosed, _resourceId, args);
-
+            TrackSafe(_diagnostics.TrackResourceClosed, _currentSessionId, args);
             Task.Run(CreateResource, _cancellationToken);
         }
 
@@ -327,7 +277,7 @@ namespace RabbitMqAsyncPublisher
                 return;
             }
 
-            TrackSafe(_diagnostics.TrackCleanUpStarted, _resourceId, _currentSessionId);
+            TrackSafe(_diagnostics.TrackCleanUpStarted, _currentSessionId);
             var stopwatch = Stopwatch.StartNew();
 
             if (!(_currentComponents is null))
@@ -340,8 +290,7 @@ namespace RabbitMqAsyncPublisher
                     }
                     catch (Exception ex)
                     {
-                        TrackSafe(_diagnostics.TrackUnexpectedException, _resourceId,
-                            $"Unable to dispose component#{i}.", ex);
+                        TrackSafe(_diagnostics.TrackUnexpectedException, $"Unable to dispose component#{i}.", ex);
                     }
                 }
 
@@ -356,10 +305,8 @@ namespace RabbitMqAsyncPublisher
                 }
                 catch (Exception ex)
                 {
-                    // Unsubscribing from "T.ConnectionShutdown" throws at least when connection is already disposed.
-
                     TrackSafe(_diagnostics.TrackUnexpectedException,
-                        _resourceId, "Unable to unsubscribe from T.Shutdown event.", ex);
+                        "Unable to unsubscribe from IAutoRecoveryResource.Shutdown event.", ex);
                 }
 
                 try
@@ -368,14 +315,13 @@ namespace RabbitMqAsyncPublisher
                 }
                 catch (Exception ex)
                 {
-                    TrackSafe(_diagnostics.TrackUnexpectedException, _resourceId,
-                        "Unable to dispose current connection.", ex);
+                    TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to dispose current resource.", ex);
                 }
 
                 _currentResource = null;
             }
 
-            TrackSafe(_diagnostics.TrackCleanUpCompleted, _resourceId, _currentSessionId, stopwatch.Elapsed);
+            TrackSafe(_diagnostics.TrackCleanUpCompleted, _currentSessionId, stopwatch.Elapsed);
         }
 
         public void Dispose()
@@ -391,7 +337,7 @@ namespace RabbitMqAsyncPublisher
                 _cancellationTokenSource.Dispose();
             }
 
-            TrackSafe(_diagnostics.TrackDisposeStarted, _resourceId);
+            TrackSafe(_diagnostics.TrackDisposeStarted);
             var stopwatch = Stopwatch.StartNew();
 
             // ReSharper disable once MethodSupportsCancellation
@@ -407,7 +353,7 @@ namespace RabbitMqAsyncPublisher
                 _connectionSemaphore.Dispose();
             }
 
-            TrackSafe(_diagnostics.TrackDisposeCompleted, _resourceId, stopwatch.Elapsed);
+            TrackSafe(_diagnostics.TrackDisposeCompleted, stopwatch.Elapsed);
         }
     }
 }

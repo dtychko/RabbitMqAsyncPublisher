@@ -3,7 +3,12 @@ using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IAutoRecoveryDiagnostics
+    public interface IUnexpectedExceptionDiagnostics
+    {
+        void TrackUnexpectedException(string message, Exception ex);
+    }
+
+    public interface IAutoRecoveryDiagnostics : IUnexpectedExceptionDiagnostics
     {
         void TrackCreateResourceAttemptStarted(string sessionId, int attempt);
 
@@ -17,50 +22,55 @@ namespace RabbitMqAsyncPublisher
 
         void TrackCreateResourceCompleted(string sessionId, int createdCount, int expectedCount, TimeSpan duration);
 
-        void TrackCleanUpStarted(string resourceId, string sessionId);
+        void TrackCleanUpStarted(string sessionId);
 
-        void TrackCleanUpCompleted(string resourceId, string sessionId, TimeSpan duration);
+        void TrackCleanUpCompleted(string sessionId, TimeSpan duration);
 
-        void TrackResourceClosed(string resourceId, ShutdownEventArgs args);
+        void TrackResourceClosed(string sessionId, ShutdownEventArgs args);
 
-        void TrackDisposeStarted(string resourceId);
+        void TrackDisposeStarted();
 
-        void TrackDisposeCompleted(string resourceId, TimeSpan duration);
-
-        void TrackUnexpectedException(string resourceId, string message, Exception ex);
+        void TrackDisposeCompleted(TimeSpan duration);
     }
 
     public class AutoRecoveryConsoleDiagnostics : IAutoRecoveryDiagnostics
     {
+        private readonly string _resourceId;
+
+        public AutoRecoveryConsoleDiagnostics(string resourceId)
+        {
+            _resourceId = resourceId;
+        }
+
         public void TrackCreateResourceAttemptStarted(string sessionId, int attempt)
         {
             Console.WriteLine(
-                $" >> {nameof(TrackCreateResourceAttemptStarted)} {nameof(sessionId)}={sessionId} {nameof(attempt)}={attempt} {nameof(DateTime.UtcNow)}={DateTime.UtcNow}");
+                $" >> {_resourceId}/{nameof(TrackCreateResourceAttemptStarted)} {nameof(sessionId)}={sessionId} {nameof(attempt)}={attempt} {nameof(DateTime.UtcNow)}={DateTime.UtcNow}");
         }
 
         public void TrackCreateResourceAttemptSucceeded(string sessionId, int attempt, TimeSpan duration)
         {
             Console.WriteLine(
-                $" >> {nameof(TrackCreateResourceAttemptSucceeded)} {nameof(sessionId)}={sessionId} {nameof(attempt)}={attempt} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCreateResourceAttemptSucceeded)} {nameof(sessionId)}={sessionId} {nameof(attempt)}={attempt} {nameof(duration)}={duration.TotalMilliseconds}");
         }
 
         public void TrackCreateResourceAttemptFailed(string sessionId, int attempt, TimeSpan duration, Exception ex)
         {
             Console.WriteLine(
-                $" >> {nameof(TrackCreateResourceAttemptFailed)} {nameof(sessionId)}={sessionId} {nameof(attempt)}={attempt} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCreateResourceAttemptFailed)} {nameof(sessionId)}={sessionId} {nameof(attempt)}={attempt} {nameof(duration)}={duration.TotalMilliseconds}");
             Console.WriteLine(ex.Message);
         }
 
         public void TrackCreateResourceSucceeded(string sessionId, TimeSpan duration)
         {
             Console.WriteLine(
-                $" >> {nameof(TrackCreateResourceSucceeded)} {nameof(sessionId)}={sessionId} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCreateResourceSucceeded)} {nameof(sessionId)}={sessionId} {nameof(duration)}={duration.TotalMilliseconds}");
         }
 
         public void TrackCreateResourceFailed(string sessionId, TimeSpan duration, Exception ex)
         {
             Console.WriteLine(
-                $" >> {nameof(TrackCreateResourceFailed)} {nameof(sessionId)}={sessionId} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCreateResourceFailed)} {nameof(sessionId)}={sessionId} {nameof(duration)}={duration.TotalMilliseconds}");
             Console.WriteLine(ex.Message);
         }
 
@@ -68,38 +78,40 @@ namespace RabbitMqAsyncPublisher
             TimeSpan duration)
         {
             Console.WriteLine(
-                $" >> {nameof(TrackCreateResourceCompleted)} {nameof(sessionId)}={sessionId} {nameof(createdCount)}={createdCount} {nameof(expectedCount)}={expectedCount} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCreateResourceCompleted)} {nameof(sessionId)}={sessionId} {nameof(createdCount)}={createdCount} {nameof(expectedCount)}={expectedCount} {nameof(duration)}={duration.TotalMilliseconds}");
         }
 
-        public void TrackCleanUpStarted(string resourceId, string sessionId)
+        public void TrackCleanUpStarted(string sessionId)
         {
-            Console.WriteLine($" >> {resourceId}/{nameof(TrackCleanUpStarted)} {nameof(sessionId)}={sessionId}");
+            Console.WriteLine($" >> {_resourceId}/{nameof(TrackCleanUpStarted)} {nameof(sessionId)}={sessionId}");
         }
 
-        public void TrackCleanUpCompleted(string resourceId, string sessionId, TimeSpan duration)
+        public void TrackCleanUpCompleted(string sessionId, TimeSpan duration)
         {
             Console.WriteLine(
-                $" >> {resourceId}/{nameof(TrackCleanUpCompleted)} {nameof(sessionId)}={sessionId} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCleanUpCompleted)} {nameof(sessionId)}={sessionId} {nameof(duration)}={duration.TotalMilliseconds}");
         }
 
-        public void TrackResourceClosed(string resourceId, ShutdownEventArgs args)
+        public void TrackResourceClosed(string sessionId, ShutdownEventArgs args)
         {
-            Console.WriteLine($" >> {resourceId}/{nameof(TrackResourceClosed)} {nameof(args)}={args}");
+            Console.WriteLine(
+                $" >> {_resourceId}/{nameof(TrackResourceClosed)} {nameof(sessionId)}={sessionId} {nameof(args)}={args}");
         }
 
-        public void TrackDisposeStarted(string resourceId)
+        public void TrackDisposeStarted()
         {
-            Console.WriteLine($" >> {resourceId}/{nameof(TrackDisposeStarted)}");
+            Console.WriteLine($" >> {_resourceId}/{nameof(TrackDisposeStarted)}");
         }
 
-        public void TrackDisposeCompleted(string resourceId, TimeSpan duration)
+        public void TrackDisposeCompleted(TimeSpan duration)
         {
-            Console.WriteLine($" >> {resourceId}/{nameof(TrackDisposeCompleted)} {nameof(duration)}={duration.TotalMilliseconds}");
+            Console.WriteLine(
+                $" >> {_resourceId}/{nameof(TrackDisposeCompleted)} {nameof(duration)}={duration.TotalMilliseconds}");
         }
 
-        public void TrackUnexpectedException(string resourceId, string message, Exception ex)
+        public void TrackUnexpectedException(string message, Exception ex)
         {
-            Console.WriteLine($" >> {resourceId}/{nameof(TrackUnexpectedException)} {nameof(message)}={message}");
+            Console.WriteLine($" >> {_resourceId}/{nameof(TrackUnexpectedException)} {nameof(message)}={message}");
             Console.WriteLine(ex.ToString());
         }
     }
@@ -120,7 +132,8 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackCreateResourceAttemptFailed(string sessionId, int attempt, TimeSpan duration, Exception ex)
+        public virtual void TrackCreateResourceAttemptFailed(string sessionId, int attempt, TimeSpan duration,
+            Exception ex)
         {
         }
 
@@ -137,27 +150,27 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackCleanUpStarted(string resourceId, string sessionId)
+        public virtual void TrackCleanUpStarted(string sessionId)
         {
         }
 
-        public virtual void TrackCleanUpCompleted(string resourceId, string sessionId, TimeSpan duration)
+        public virtual void TrackCleanUpCompleted(string sessionId, TimeSpan duration)
         {
         }
 
-        public virtual void TrackResourceClosed(string resourceId, ShutdownEventArgs args)
+        public virtual void TrackResourceClosed(string sessionId, ShutdownEventArgs args)
         {
         }
 
-        public virtual void TrackDisposeStarted(string resourceId)
+        public virtual void TrackDisposeStarted()
         {
         }
 
-        public virtual void TrackDisposeCompleted(string resourceId, TimeSpan duration)
+        public virtual void TrackDisposeCompleted(TimeSpan duration)
         {
         }
 
-        public virtual void TrackUnexpectedException(string resourceId, string message, Exception ex)
+        public virtual void TrackUnexpectedException(string message, Exception ex)
         {
         }
     }

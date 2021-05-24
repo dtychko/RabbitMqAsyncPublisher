@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
+        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 2000;
@@ -81,33 +81,23 @@ namespace RabbitMqAsyncPublisher
                 RequestedHeartbeat = TimeSpan.Zero
             };
 
-            var diagnostics = new AutoRecoveryConsoleDiagnostics();
-            using (var autoRecovery = new AutoRecovery<AutoRecoveryResourceConnection>(
-                () => new AutoRecoveryResourceConnection(connectionFactory.CreateConnection()),
-                new Func<AutoRecoveryResourceConnection, IDisposable>[]
-                {
-                    connection =>
-                    {
-                        var modelAutoRecovery = new AutoRecovery<AutoRecoveryResourceModel>(
-                            () => new AutoRecoveryResourceModel(connection.Value.CreateModel()),
-                            new Func<AutoRecoveryResourceModel, IDisposable>[]
-                            {
-                                model => new QueueBasedAsyncPublisher(model.Value)
-                            },
-                            _ => TimeSpan.FromSeconds(3),
-                            diagnostics);
-                        
-                        modelAutoRecovery.Start();
-                        return modelAutoRecovery;
-                    },
-                    conn => new AutoRecoveryConnectionHealthCheck(conn.Value, TimeSpan.FromSeconds(3)),
-                },
+            using (var connectionAutoRecovery = AutoRecovery.Connection(
+                connectionFactory,
                 _ => TimeSpan.FromSeconds(3),
-                diagnostics))
+                new AutoRecoveryConsoleDiagnostics("connection/1"),
+                connection =>
+                {
+                    return AutoRecovery.Model(
+                        connection,
+                        _ => TimeSpan.FromSeconds(3),
+                        new AutoRecoveryConsoleDiagnostics("model/1"),
+                        model => new QueueBasedAsyncPublisher(model)
+                    );
+                }))
             {
-                autoRecovery.Start();
+                connectionAutoRecovery.Start();
 
-                Thread.Sleep(3*60_000);
+                Thread.Sleep(3 * 60_000);
                 Console.WriteLine("DISPOSING AUTO_RECOVERY");
             }
 
@@ -156,12 +146,9 @@ namespace RabbitMqAsyncPublisher
                             $" >> [{Thread.CurrentThread.ManagedThreadId}] Model:Recovery SeqNo={model.NextPublishSeqNo}");
 
                 model.ConfirmSelect();
-                // model.QueueDeclare(QueueName, true, false, false);
+                model.QueueDeclare(QueueName, true, false, false);
 
-                var publisher = AsyncPublisherDeclaringDecorator.Create(
-                    new QueueBasedAsyncPublisher(model),
-                    AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
-                );
+                var publisher = new QueueBasedAsyncPublisher(model);
 
                 for (var i = 0; i < 1000; i++)
                 {
@@ -258,10 +245,7 @@ namespace RabbitMqAsyncPublisher
             // var publisher = new AsyncRetryingPublisher(new AsyncPublisher(model, QueueName));
             var publisher = new AsyncPublisherAdapter<bool>(
                 // new AsyncPublisherSyncDecorator<bool>(
-                    AsyncPublisherDeclaringDecorator.Create(
-                        new QueueBasedAsyncPublisher(model),
-                        AsyncPublisherDeclaringDecorator.QueueDeclarator(QueueName)
-                    ),
+                new QueueBasedAsyncPublisher(model),
                 // ),
                 "test_exchange",
                 "some topic"

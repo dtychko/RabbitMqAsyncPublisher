@@ -47,15 +47,6 @@ namespace RabbitMqAsyncPublisher
         void TrackDisposeCompleted();
     }
 
-    public interface IAsyncPublisherDeclaringDecoratorDiagnostics
-    {
-        void TrackDeclare();
-
-        void TrackDeclareCompleted(TimeSpan duration);
-
-        void TrackDeclareFailed(TimeSpan duration, Exception ex);
-    }
-
     public interface IAsyncPublisherWithRetriesDiagnostics
     {
         void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args);
@@ -124,8 +115,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics,
-        IAsyncPublisherDeclaringDecoratorDiagnostics
+    public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics
     {
         public static readonly EmptyDiagnostics Instance = new EmptyDiagnostics();
 
@@ -234,18 +224,6 @@ namespace RabbitMqAsyncPublisher
         }
 
         public virtual void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay)
-        {
-        }
-
-        public void TrackDeclare()
-        {
-        }
-
-        public void TrackDeclareCompleted(TimeSpan duration)
-        {
-        }
-
-        public void TrackDeclareFailed(TimeSpan duration, Exception ex)
         {
         }
     }
