@@ -14,9 +14,8 @@ namespace RabbitMqAsyncPublisher
         private readonly ConcurrentQueue<PublishQueueItem> _publishQueue = new ConcurrentQueue<PublishQueueItem>();
         private readonly ConcurrentQueue<AckQueueItem> _ackQueue = new ConcurrentQueue<AckQueueItem>();
 
-        // TODO: Replace with AsyncManualResetEventSlim implementation
-        private readonly ManualResetEventSlim _publishEvent = new ManualResetEventSlim(false);
-        private readonly ManualResetEventSlim _ackEvent = new ManualResetEventSlim(false);
+        private readonly AsyncManualResetEvent _publishEvent = new AsyncManualResetEvent(false);
+        private readonly AsyncManualResetEvent _ackEvent = new AsyncManualResetEvent(false);
 
         private readonly Task _publishLoop;
         private readonly Task _ackLoop;
@@ -43,44 +42,50 @@ namespace RabbitMqAsyncPublisher
         private void OnBasicAcks(object sender, BasicAckEventArgs e)
         {
             _ackQueue.Enqueue(new AckQueueItem(e.DeliveryTag, e.Multiple, true));
-
-            if (!_ackEvent.IsSet)
-            {
-                _ackEvent.Set();
-            }
+            _ackEvent.Set();
         }
 
         private void OnBasicNacks(object sender, BasicNackEventArgs e)
         {
             _ackQueue.Enqueue(new AckQueueItem(e.DeliveryTag, e.Multiple, false));
+            _ackEvent.Set();
+        }
 
-            if (!_ackEvent.IsSet)
+        private async void StartPublishLoop()
+        {
+            try
             {
-                _ackEvent.Set();
+                await _publishEvent.WaitAsync().ConfigureAwait(false);
+
+                while (_isDisposed == 0 || !_publishQueue.IsEmpty)
+                {
+                    _publishEvent.Reset();
+                    RunPublishInnerLoop();
+                    await _publishEvent.WaitAsync().ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                // Ignore
             }
         }
 
-        private void StartPublishLoop()
+        private async void StartAckLoop()
         {
-            _publishEvent.Wait();
-
-            while (_isDisposed == 0 || !_publishQueue.IsEmpty)
+            try
             {
-                _publishEvent.Reset();
-                RunPublishInnerLoop();
-                _publishEvent.Wait();
+                await _ackEvent.WaitAsync().ConfigureAwait(false);
+
+                while (_isDisposed == 0 || !_ackQueue.IsEmpty)
+                {
+                    _ackEvent.Reset();
+                    RunAckInnerLoop();
+                    await _ackEvent.WaitAsync().ConfigureAwait(false);
+                }
             }
-        }
-
-        private void StartAckLoop()
-        {
-            _ackEvent.Wait();
-
-            while (_isDisposed == 0 || !_ackQueue.IsEmpty)
+            catch
             {
-                _ackEvent.Reset();
-                RunAckInnerLoop();
-                _ackEvent.Wait();
+                // Ignore
             }
         }
 
@@ -107,12 +112,9 @@ namespace RabbitMqAsyncPublisher
                     continue;
                 }
 
-                if (Model.IsClosed)
+                if (IsModelClosed(out var shutdownEventArgs))
                 {
-                    // TODO: Use Interlocked for reading Model.CloseReason
-                    Task.Run(() =>
-                        taskCompletionSource.TrySetException(
-                            new AlreadyClosedException(Model.CloseReason)));
+                    Task.Run(() => taskCompletionSource.TrySetException(new AlreadyClosedException(shutdownEventArgs)));
                     continue;
                 }
 
@@ -180,10 +182,7 @@ namespace RabbitMqAsyncPublisher
                 _publishQueue.Enqueue(queueItem);
             }
 
-            if (!_publishEvent.IsSet)
-            {
-                _publishEvent.Set();
-            }
+            _publishEvent.Set();
 
             return taskCompletionSource.Task;
         }
@@ -207,15 +206,8 @@ namespace RabbitMqAsyncPublisher
             Model.BasicAcks -= OnBasicAcks;
             Model.BasicNacks -= OnBasicNacks;
 
-            if (!_publishEvent.IsSet)
-            {
-                _publishEvent.Set();
-            }
-
-            if (!_ackEvent.IsSet)
-            {
-                _ackEvent.Set();
-            }
+            _publishEvent.Set();
+            _ackEvent.Set();
 
             Task.WaitAll(_publishLoop, _ackLoop);
 
@@ -223,9 +215,6 @@ namespace RabbitMqAsyncPublisher
             {
                 Task.Run(() => source.TrySetException(new ObjectDisposedException(nameof(QueueBasedAsyncPublisher))));
             }
-
-            _publishEvent.Dispose();
-            _ackEvent.Dispose();
         }
 
 
@@ -252,6 +241,13 @@ namespace RabbitMqAsyncPublisher
             {
                 return _completionSourceRegistry.RemoveAllUpTo(deliveryTag);
             }
+        }
+
+        private bool IsModelClosed(out ShutdownEventArgs shutdownEventArgs)
+        {
+            shutdownEventArgs = default;
+            Interlocked.Exchange(ref shutdownEventArgs, Model.CloseReason);
+            return !(shutdownEventArgs is null);
         }
 
         private class PublishQueueItem

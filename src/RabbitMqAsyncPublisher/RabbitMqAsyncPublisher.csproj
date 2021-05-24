@@ -69,6 +69,7 @@
         <Reference Include="System.Xml" />
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="AsyncManualResetEvent.cs" />
         <Compile Include="AsyncPublisher.cs" />
         <Compile Include="AsyncPublisherDeclaringDecorator.cs" />
         <Compile Include="AsyncPublisherSyncDecorator.cs" />
