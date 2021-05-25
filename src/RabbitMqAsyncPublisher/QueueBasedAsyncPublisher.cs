@@ -37,6 +37,14 @@ namespace RabbitMqAsyncPublisher
 
         public QueueBasedAsyncPublisher(IModel model, IQueueBasedAsyncPublisherDiagnostics diagnostics = null)
         {
+            // Heuristic based on reverse engineering of "RabbitMQ.Client" lib
+            // that helps to make sure that "ConfirmSelect" method was called on the model
+            // to enable confirm mode.
+            if (model.NextPublishSeqNo == 0)
+            {
+                throw new ArgumentException("Channel should be in confirm mode.");
+            }
+            
             Model = model;
             _diagnostics = diagnostics ?? QueueBasedAsyncPublisherDiagnostics.NoDiagnostics;
 

@@ -22,8 +22,6 @@ namespace RabbitMqAsyncPublisher
         private readonly Task _publishLoop;
         private volatile int _isDisposed;
 
-        public IModel Model => _decorated.Model;
-
         public QueueBasedAsyncPublisherWithRetries(
             IAsyncPublisher<bool> decorated,
             TimeSpan retryDelay)

@@ -11,13 +11,13 @@ namespace RabbitMqAsyncPublisher
     public class AsyncPublisherWithRetries : IAsyncPublisher<RetryingPublisherResult>
     {
         private readonly IAsyncPublisher<bool> _decorated;
+
+        // TODO: replace with attempt->TimeSpan function
         private readonly TimeSpan _retryDelay;
         private readonly IAsyncPublisherWithRetriesDiagnostics _diagnostics;
         private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
         private readonly ManualResetEventSlim _canPublish = new ManualResetEventSlim(true);
         private bool _isDisposed;
-
-        public IModel Model => _decorated.Model;
 
         public AsyncPublisherWithRetries(
             IAsyncPublisher<bool> decorated,
@@ -55,13 +55,15 @@ namespace RabbitMqAsyncPublisher
 
             using (StartPublishing(out var queueNode))
             {
-                if (await TryPublishAsync(1, exchange, routingKey, body, properties, cancellationToken))
+                if (await TryPublishAsync(1, exchange, routingKey, body, properties, cancellationToken)
+                    .ConfigureAwait(false))
                 {
                     return RetryingPublisherResult.NoRetries;
                 }
 
                 _canPublish.Reset();
-                return await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken);
+                return await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
 
@@ -101,7 +103,7 @@ namespace RabbitMqAsyncPublisher
                 await Task.WhenAny(
                     Task.Delay(-1, cancellationToken),
                     nextQueueNode.Value.CompletionSource.Task
-                );
+                ).ConfigureAwait(false);
             }
 
             for (var attempt = 2;; attempt++)
@@ -113,9 +115,9 @@ namespace RabbitMqAsyncPublisher
                     _retryDelay
                 );
 
-                await Task.Delay(_retryDelay, cancellationToken);
+                await Task.Delay(_retryDelay, cancellationToken).ConfigureAwait(false);
 
-                if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, cancellationToken))
+                if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, cancellationToken).ConfigureAwait(false))
                 {
                     return new RetryingPublisherResult(attempt - 1);
                 }
@@ -136,8 +138,9 @@ namespace RabbitMqAsyncPublisher
 
             try
             {
-                var acknowledged =
-                    await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
+                var acknowledged = await _decorated
+                    .PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken)
+                    .ConfigureAwait(false);
                 _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
                 return acknowledged;
             }

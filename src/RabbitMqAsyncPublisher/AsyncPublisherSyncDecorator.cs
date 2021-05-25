@@ -14,8 +14,6 @@ namespace RabbitMqAsyncPublisher
         private readonly IAsyncPublisher<TResult> _decorated;
         private readonly object _publishSyncRoot = new object();
 
-        public IModel Model => _decorated.Model;
-
         public AsyncPublisherSyncDecorator(IAsyncPublisher<TResult> decorated)
         {
             _decorated = decorated;

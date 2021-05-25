@@ -15,8 +15,6 @@ namespace RabbitMqAsyncPublisher
         private readonly int _nonAcknowledgedBytesSoftLimit;
         private int _nonAcknowledgedBytes;
 
-        public IModel Model => _decorated.Model;
-
         public AsyncPublisherWithBuffer(IAsyncPublisher<TResult> decorated, int nonAcknowledgedBytesSoftLimit)
         {
             _decorated = decorated;

@@ -37,6 +37,11 @@ namespace RabbitMqAsyncPublisher
             AckQueueSize = ackQueueSize;
             CompletionSourceRegistrySize = completionSourceRegistrySize;
         }
+
+        public override string ToString()
+        {
+            return $"{nameof(PublishQueueSize)}: {PublishQueueSize}, {nameof(AckQueueSize)}: {AckQueueSize}, {nameof(CompletionSourceRegistrySize)}: {CompletionSourceRegistrySize}";
+        }
     }
 
     public class AckArgs
@@ -105,6 +110,64 @@ namespace RabbitMqAsyncPublisher
 
         public virtual void TrackStatus(QueueBasedAsyncPublisherStatus status)
         {
+        }
+    }
+
+    public class ConsoleQueueBasedAsyncPublisherDiagnostics : IQueueBasedAsyncPublisherDiagnostics
+    {
+        public void TrackUnexpectedException(string message, Exception ex)
+        {
+            Console.WriteLine($" >> {nameof(TrackUnexpectedException)}: {message} {ex}");
+        }
+
+        public void TrackPublishTaskEnqueued(PublishArgs publishArgs, QueueBasedAsyncPublisherStatus status)
+        {
+            Console.WriteLine($" >> {nameof(TrackPublishTaskEnqueued)}: {status}");
+        }
+
+        public void TrackPublishStarted(PublishArgs publishArgs, ulong deliveryTag)
+        {
+            Console.WriteLine($" >> {nameof(TrackPublishStarted)}: {deliveryTag}");
+        }
+
+        public void TrackPublishSucceeded(PublishArgs publishArgs, ulong deliveryTag, TimeSpan duration)
+        {
+            Console.WriteLine($" >> {nameof(TrackPublishSucceeded)}: {deliveryTag} in {duration.TotalMilliseconds}ms");
+        }
+
+        public void TrackPublishFailed(PublishArgs publishArgs, ulong deliveryTag, TimeSpan duration, Exception ex)
+        {
+            Console.WriteLine($" >> {nameof(TrackPublishFailed)}: {deliveryTag} in {duration.TotalMilliseconds}ms {ex}");
+        }
+
+        public void TrackAckTaskEnqueued(AckArgs ackArgs, QueueBasedAsyncPublisherStatus status)
+        {
+            Console.WriteLine($" >> {nameof(TrackAckTaskEnqueued)}: {ackArgs.DeliveryTag}, {status}");
+        }
+
+        public void TrackAckStarted(AckArgs ackArgs)
+        {
+            Console.WriteLine($" >> {nameof(TrackAckStarted)}: {ackArgs.DeliveryTag}");
+        }
+
+        public void TrackAckSucceeded(AckArgs ackArgs, TimeSpan duration)
+        {
+            Console.WriteLine($" >> {nameof(TrackAckSucceeded)}: {ackArgs.DeliveryTag} in {duration.TotalMilliseconds}ms");
+        }
+
+        public void TrackDisposeStarted()
+        {
+            Console.WriteLine($" >> {nameof(QueueBasedAsyncPublisher)}/{nameof(TrackDisposeStarted)}");
+        }
+
+        public void TrackDisposeSucceeded(TimeSpan duration)
+        {
+            Console.WriteLine($" >> {nameof(QueueBasedAsyncPublisher)}/{nameof(TrackDisposeSucceeded)} in {duration.TotalMilliseconds}");
+        }
+
+        public void TrackStatus(QueueBasedAsyncPublisherStatus status)
+        {
+            Console.WriteLine($" >> {nameof(QueueBasedAsyncPublisher)}/{nameof(TrackStatus)}: {status}");
         }
     }
 }

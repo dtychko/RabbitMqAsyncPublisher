@@ -9,12 +9,7 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IModelAware
-    {
-        IModel Model { get; }
-    }
-
-    public interface IAsyncPublisher<TResult> : IModelAware, IDisposable
+    public interface IAsyncPublisher<TResult> : IDisposable
     {
         Task<TResult> PublishUnsafeAsync(
             string exchange,

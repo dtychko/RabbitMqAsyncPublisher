@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
+        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 2000;
@@ -72,6 +72,9 @@ namespace RabbitMqAsyncPublisher
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);
 
+            Console.WriteLine("Sync context " + SynchronizationContext.Current);
+            Console.WriteLine("Task scheduler " + TaskScheduler.Default);
+
             var connectionFactory = new ConnectionFactory
             {
                 Uri = RabbitMqUri,
@@ -81,24 +84,51 @@ namespace RabbitMqAsyncPublisher
                 RequestedHeartbeat = TimeSpan.Zero
             };
 
-            using (var connectionAutoRecovery = AutoRecovery.Connection(
-                connectionFactory,
-                _ => TimeSpan.FromSeconds(3),
-                new AutoRecoveryConsoleDiagnostics("connection/1"),
-                connection =>
-                {
-                    return AutoRecovery.Model(
-                        connection,
-                        _ => TimeSpan.FromSeconds(3),
-                        new AutoRecoveryConsoleDiagnostics("model/1"),
-                        model => new QueueBasedAsyncPublisher(model)
-                    );
-                }))
+            using (var publisherProxy = new AsyncPublisherProxy<bool>())
+            using (var retryingPublisher = new AsyncPublisherWithRetries(
+                publisherProxy, TimeSpan.FromSeconds(3), new ConsoleAsyncPublisherWithRetriesDiagnostics()))
             {
-                connectionAutoRecovery.Start();
+                using (AutoRecovery.StartConnection(
+                    connectionFactory,
+                    _ => TimeSpan.FromSeconds(3),
+                    new AutoRecoveryConsoleDiagnostics("connection/1"),
+                    AutoRecovery.StartAutoRecoveryHealthCheck(TimeSpan.FromMinutes(1)),
+                    connection =>
+                    {
+                        return AutoRecovery.StartModel(
+                            connection,
+                            _ => TimeSpan.FromSeconds(3),
+                            new AutoRecoveryConsoleDiagnostics("model/1"),
+                            model =>
+                            {
+                                model.ConfirmSelect();
+                                
+                                var innerPublisher = new QueueBasedAsyncPublisher(model,
+                                    new ConsoleQueueBasedAsyncPublisherDiagnostics());
+                                publisherProxy.SetImplementation(innerPublisher);
 
-                Thread.Sleep(3 * 60_000);
-                Console.WriteLine("DISPOSING AUTO_RECOVERY");
+                                return new Disposable(() =>
+                                {
+                                    // todo: catch when first throws an exception
+                                    publisherProxy.Reset();
+                                    innerPublisher.Dispose();
+                                });
+                            });
+                    }))
+                {
+                    foreach (var message in Utils.GenerateMessages(100, 10240))
+                    {
+                        Console.WriteLine("Sending next message");
+                        retryingPublisher.PublishUnsafeAsync("", "test.queue", message, Utils.CreateBasicProperties(),
+                                default)
+                            .Wait();
+                        Console.WriteLine("Sent message");
+
+                        Thread.Sleep(1000);
+                    }
+
+                    Console.WriteLine("DISPOSING AUTO_RECOVERY");
+                }
             }
 
             Console.WriteLine("DISPOSED AUTO_RECOVERY");

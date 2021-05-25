@@ -115,6 +115,37 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
+    public class ConsoleAsyncPublisherWithRetriesDiagnostics : IAsyncPublisherWithRetriesDiagnostics
+    {
+        public void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration,
+            Exception ex)
+        {
+            Console.WriteLine($" >> WithRetries/{nameof(TrackPublishUnsafeAttemptFailed)}/{args.Attempt}/error {duration.TotalMilliseconds}");
+        }
+
+        public void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration,
+            bool acknowledged)
+        {
+            Console.WriteLine($" >> WithRetries/{nameof(TrackPublishUnsafeAttemptCompleted)}/{args.Attempt}/completed {duration.TotalMilliseconds}");
+        }
+
+        public void TrackCanPublishWait(PublishArgs args)
+        {
+            Console.WriteLine($" >> WithRetries/{nameof(TrackCanPublishWait)}");
+        }
+
+        public void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay)
+        {
+            Console.WriteLine($" >> WithRetries/{nameof(TrackRetryDelay)}/{args.Attempt}: {delay.TotalMilliseconds}ms");
+        }
+
+        public void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args)
+        {
+            Console.WriteLine($" >> WithRetries/{nameof(TrackPublishUnsafeAttempt)}/{args.Attempt}/started");
+        }
+
+    }
+
     public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics
     {
         public static readonly EmptyDiagnostics Instance = new EmptyDiagnostics();

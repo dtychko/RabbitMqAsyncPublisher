@@ -13,13 +13,13 @@ namespace RabbitMqAsyncPublisher
 
     public static class AutoRecovery
     {
-        public static AutoRecovery<AutoRecoveryResourceConnection> Connection(
+        public static AutoRecovery<AutoRecoveryResourceConnection> StartConnection(
             IConnectionFactory connectionFactory,
             Func<int, TimeSpan> retryDelay,
             IAutoRecoveryDiagnostics diagnostics,
             params Func<IConnection, IDisposable>[] componentFactories)
         {
-            return new AutoRecovery<AutoRecoveryResourceConnection>(
+            var autoRecovery = new AutoRecovery<AutoRecoveryResourceConnection>(
                 () => new AutoRecoveryResourceConnection(connectionFactory.CreateConnection(), diagnostics),
                 componentFactories
                     .Select(factory =>
@@ -28,15 +28,23 @@ namespace RabbitMqAsyncPublisher
                 retryDelay,
                 diagnostics
             );
+            
+            autoRecovery.Start();
+            return autoRecovery;
         }
 
-        public static AutoRecovery<AutoRecoveryResourceModel> Model(
+        public static Func<IConnection, IDisposable> StartAutoRecoveryHealthCheck(TimeSpan checkInterval)
+        {
+            return connection => new AutoRecoveryConnectionHealthCheck(connection, checkInterval);
+        }
+
+        public static AutoRecovery<AutoRecoveryResourceModel> StartModel(
             IConnection connection,
             Func<int, TimeSpan> retryDelay,
             IAutoRecoveryDiagnostics diagnostics,
             params Func<IModel, IDisposable>[] componentFactories)
         {
-            return new AutoRecovery<AutoRecoveryResourceModel>(
+            var autoRecovery = new AutoRecovery<AutoRecoveryResourceModel>(
                 () => new AutoRecoveryResourceModel(connection.CreateModel(), diagnostics),
                 componentFactories
                     .Select(factory =>
@@ -45,6 +53,9 @@ namespace RabbitMqAsyncPublisher
                 retryDelay,
                 diagnostics
             );
+
+            autoRecovery.Start();
+            return autoRecovery;
         }
     }
 
@@ -233,7 +244,7 @@ namespace RabbitMqAsyncPublisher
                 }
             }
 
-            TrackSafe(_diagnostics.TrackCreateResourceCompleted, _currentSessionId, components.Count,
+            TrackSafe(_diagnostics.TrackCreateComponentsCompleted, _currentSessionId, components.Count,
                 componentFactories.Count, stopwatch.Elapsed);
             return components;
         }

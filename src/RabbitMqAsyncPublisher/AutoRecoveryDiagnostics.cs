@@ -20,7 +20,7 @@ namespace RabbitMqAsyncPublisher
 
         void TrackCreateResourceFailed(string sessionId, TimeSpan duration, Exception ex);
 
-        void TrackCreateResourceCompleted(string sessionId, int createdCount, int expectedCount, TimeSpan duration);
+        void TrackCreateComponentsCompleted(string sessionId, int createdCount, int expectedCount, TimeSpan duration);
 
         void TrackCleanUpStarted(string sessionId);
 
@@ -74,11 +74,11 @@ namespace RabbitMqAsyncPublisher
             Console.WriteLine(ex.Message);
         }
 
-        public void TrackCreateResourceCompleted(string sessionId, int createdCount, int expectedCount,
+        public void TrackCreateComponentsCompleted(string sessionId, int createdCount, int expectedCount,
             TimeSpan duration)
         {
             Console.WriteLine(
-                $" >> {_resourceId}/{nameof(TrackCreateResourceCompleted)} {nameof(sessionId)}={sessionId} {nameof(createdCount)}={createdCount} {nameof(expectedCount)}={expectedCount} {nameof(duration)}={duration.TotalMilliseconds}");
+                $" >> {_resourceId}/{nameof(TrackCreateComponentsCompleted)} {nameof(sessionId)}={sessionId} {nameof(createdCount)}={createdCount} {nameof(expectedCount)}={expectedCount} {nameof(duration)}={duration.TotalMilliseconds}");
         }
 
         public void TrackCleanUpStarted(string sessionId)
@@ -145,7 +145,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackCreateResourceCompleted(string sessionId, int createdCount, int expectedCount,
+        public virtual void TrackCreateComponentsCompleted(string sessionId, int createdCount, int expectedCount,
             TimeSpan duration)
         {
         }
