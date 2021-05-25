@@ -5,8 +5,17 @@ namespace RabbitMqAsyncPublisher
 {
     using static DiagnosticsUtils;
 
+    /// <summary>
+    /// Represents a resource with shutdown-able lifecycle,
+    /// which can be plugged into auto-recovery mechanism,
+    /// e.g. RabbitMQ connection or model.
+    /// </summary>
     public interface IAutoRecoveryResource : IDisposable
     {
+        /// <summary>
+        /// Null if resource is in open state.
+        /// Otherwise, describes why resource was closed.
+        /// </summary>
         ShutdownEventArgs CloseReason { get; }
 
         event EventHandler<ShutdownEventArgs> Shutdown;

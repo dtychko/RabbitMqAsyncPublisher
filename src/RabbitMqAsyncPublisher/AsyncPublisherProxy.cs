@@ -6,6 +6,11 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
+    /// <summary>
+    /// Allows to swap publisher implementation at runtime.
+    /// Useful to integrate auto-recovery (which recreates publishers on recovery)
+    /// with retrying/buffering publisher, which must be kept alive to preserve its state.
+    /// </summary>
     public class AsyncPublisherProxy<TResult> : IAsyncPublisher<TResult>
     {
         private readonly object _syncRoot = new object();
@@ -29,6 +34,9 @@ namespace RabbitMqAsyncPublisher
             }
             catch (ObjectDisposedException)
             {
+                // If implementation is disposed, then most likely model/connection is closed,
+                // so we should adapt such exception to AlreadyClosed,
+                // which is expected to be thrown in such cases when publisher can't complete publish.
                 throw new AlreadyClosedException(new ShutdownEventArgs(ShutdownInitiator.Application,
                     Constants.ReplySuccess, "Publisher implementation disposed"));
             }
@@ -53,6 +61,7 @@ namespace RabbitMqAsyncPublisher
 
         void IDisposable.Dispose()
         {
+            // Lifecycle of proxied implementation is controlled by external code, no need to dispose it here
         }
     }
 }
