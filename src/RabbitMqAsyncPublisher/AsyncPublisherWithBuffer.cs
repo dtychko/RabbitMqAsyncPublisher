@@ -8,14 +8,15 @@ namespace RabbitMqAsyncPublisher
     public class AsyncPublisherWithBuffer<TResult> : IAsyncPublisher<TResult>
     {
         private readonly IAsyncPublisher<TResult> _decorated;
+
         private readonly int _processingMessagesLimit;
         private readonly int _processingBytesSoftLimit;
-        private readonly ManualResetEventSlim _manualResetEvent = new ManualResetEventSlim(true);
-        private volatile bool _isDisposed;
-
-        private readonly object _syncRoot = new object();
         private int _processingMessages;
         private int _processingBytes;
+
+        private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
+        private readonly CancellationTokenSource _disposeCancellationTokenSource = new CancellationTokenSource();
+        private readonly CancellationToken _disposeCancellationToken;
 
         public AsyncPublisherWithBuffer(
             IAsyncPublisher<TResult> decorated,
@@ -35,9 +36,9 @@ namespace RabbitMqAsyncPublisher
             _decorated = decorated;
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
-        }
 
-        private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
+            _disposeCancellationToken = _disposeCancellationTokenSource.Token;
+        }
 
         public async Task<TResult> PublishAsync(
             string exchange,
@@ -46,72 +47,78 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            ThrowIfDisposed();
-            cancellationToken.ThrowIfCancellationRequested();
-
             try
             {
-                await Task.WhenAny(
-                    Task.Delay(-1, CancellationToken.None),
-                    _semaphore.WaitAsync(cancellationToken)).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+                _disposeCancellationToken.ThrowIfCancellationRequested();
+
+                if (cancellationToken.CanBeCanceled)
+                {
+                    using (var compositeCancellationTokenSource =
+                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCancellationToken))
+                    {
+                        await _semaphore.WaitAsync(compositeCancellationTokenSource.Token).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    await _semaphore.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException ex)
             {
-                if (ex.CancellationToken == cancellationToken)
+                if (ex.CancellationToken == _disposeCancellationToken)
                 {
-                    throw;
+                    throw new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
                 }
-            }
 
-            ThrowIfDisposed();
-
-            lock (_semaphore)
-            {
-                _processingMessages += 1;
-                _processingBytes += body.Length;
-
-                if (_processingMessages < _processingMessagesLimit && _processingBytes < _processingBytesSoftLimit)
-                {
-                    _semaphore.Release();
-                }
+                throw;
             }
 
             try
             {
-                return await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
+                UpdateState(1, body.Length);
+                return await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken)
+                    .ConfigureAwait(false);
             }
             finally
             {
-                lock (_semaphore)
-                {
-                    _processingMessages -= 1;
-                    _processingBytes -= body.Length;
+                UpdateState(-1, -body.Length);
+            }
+        }
 
-                    if (_processingMessages < _processingMessagesLimit
-                        && _processingBytes < _processingBytesSoftLimit
-                        && _semaphore.CurrentCount == 0)
-                    {
-                        _semaphore.Release();
-                    }
+        private void UpdateState(int deltaMessages, int deltaBytes)
+        {
+            lock (_semaphore)
+            {
+                _processingMessages += deltaMessages;
+                _processingBytes += deltaBytes;
+
+                if (_processingMessages < _processingMessagesLimit
+                    && _processingBytes < _processingBytesSoftLimit
+                    && _semaphore.CurrentCount == 0
+                    && !_disposeCancellationToken.IsCancellationRequested)
+                {
+                    _semaphore.Release();
                 }
             }
         }
 
         public void Dispose()
         {
-            _isDisposed = true;
-            _decorated.Dispose();
-
-            _manualResetEvent.Dispose();
-            _manualResetEvent.Set();
-        }
-
-        private void ThrowIfDisposed()
-        {
-            if (_isDisposed)
+            lock (_semaphore)
             {
-                throw new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
+                if (_disposeCancellationTokenSource.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _disposeCancellationTokenSource.Cancel();
+                _disposeCancellationTokenSource.Dispose();
             }
+
+            _semaphore.Dispose();
+            _decorated.Dispose();
         }
     }
 }
