@@ -84,6 +84,7 @@
         </Reference>
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="AsyncPublisherWithBufferTests.cs" />
         <Compile Include="AutoRecoveryTests.cs" />
         <Compile Include="TestAutoRecoveryResource.cs" />
         <Compile Include="TestDiagnostics.cs" />

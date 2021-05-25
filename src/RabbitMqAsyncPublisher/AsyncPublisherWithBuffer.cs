@@ -18,6 +18,8 @@ namespace RabbitMqAsyncPublisher
         private readonly CancellationTokenSource _disposeCancellationTokenSource = new CancellationTokenSource();
         private readonly CancellationToken _disposeCancellationToken;
 
+        private readonly object _syncRoot = new object();
+
         public AsyncPublisherWithBuffer(
             IAsyncPublisher<TResult> decorated,
             int processingMessagesLimit = int.MaxValue,
@@ -47,9 +49,10 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             try
             {
-                cancellationToken.ThrowIfCancellationRequested();
                 _disposeCancellationToken.ThrowIfCancellationRequested();
 
                 if (cancellationToken.CanBeCanceled)
@@ -57,6 +60,7 @@ namespace RabbitMqAsyncPublisher
                     using (var compositeCancellationTokenSource =
                         CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCancellationToken))
                     {
+                        // TODO: replace with another sync primitive that supports FIFO semantics
                         await _semaphore.WaitAsync(compositeCancellationTokenSource.Token).ConfigureAwait(false);
                     }
                 }
@@ -64,6 +68,8 @@ namespace RabbitMqAsyncPublisher
                 {
                     await _semaphore.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
                 }
+
+                Console.WriteLine($" -- {exchange} --");
             }
             catch (OperationCanceledException ex)
             {
@@ -89,14 +95,14 @@ namespace RabbitMqAsyncPublisher
 
         private void UpdateState(int deltaMessages, int deltaBytes)
         {
-            lock (_semaphore)
+            lock (_syncRoot)
             {
                 _processingMessages += deltaMessages;
                 _processingBytes += deltaBytes;
 
-                if (_processingMessages < _processingMessagesLimit
+                if (_semaphore.CurrentCount == 0
+                    && _processingMessages < _processingMessagesLimit
                     && _processingBytes < _processingBytesSoftLimit
-                    && _semaphore.CurrentCount == 0
                     && !_disposeCancellationToken.IsCancellationRequested)
                 {
                     _semaphore.Release();
@@ -106,7 +112,7 @@ namespace RabbitMqAsyncPublisher
 
         public void Dispose()
         {
-            lock (_semaphore)
+            lock (_syncRoot)
             {
                 if (_disposeCancellationTokenSource.IsCancellationRequested)
                 {
