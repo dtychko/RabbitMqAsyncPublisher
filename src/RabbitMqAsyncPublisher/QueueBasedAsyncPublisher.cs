@@ -131,15 +131,16 @@ namespace RabbitMqAsyncPublisher
         {
             while (TryDequeuePublish(out var publishQueueItem))
             {
-                var cancellationToke = publishQueueItem.CancellationToken;
+                var cancellationToken = publishQueueItem.CancellationToken;
                 var taskCompletionSource = publishQueueItem.TaskCompletionSource;
                 ulong seqNo;
 
                 try
                 {
-                    if (cancellationToke.IsCancellationRequested)
+                    if (cancellationToken.IsCancellationRequested)
                     {
                         Task.Run(() => taskCompletionSource.TrySetCanceled());
+                        continue;
                     }
 
                     if (_isDisposed == 1)
@@ -157,9 +158,9 @@ namespace RabbitMqAsyncPublisher
                         continue;
                     }
 
-                    if (cancellationToke.CanBeCanceled)
+                    if (cancellationToken.CanBeCanceled)
                     {
-                        var registration = cancellationToke.Register(() =>
+                        var registration = cancellationToken.Register(() =>
                         {
                             Task.Run(() => taskCompletionSource.TrySetCanceled());
                         });
