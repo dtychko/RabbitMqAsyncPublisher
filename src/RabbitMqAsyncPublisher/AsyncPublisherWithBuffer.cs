@@ -8,18 +8,36 @@ namespace RabbitMqAsyncPublisher
     public class AsyncPublisherWithBuffer<TResult> : IAsyncPublisher<TResult>
     {
         private readonly IAsyncPublisher<TResult> _decorated;
+        private readonly int _processingMessagesLimit;
+        private readonly int _processingBytesSoftLimit;
         private readonly ManualResetEventSlim _manualResetEvent = new ManualResetEventSlim(true);
         private volatile bool _isDisposed;
 
         private readonly object _syncRoot = new object();
-        private readonly int _nonAcknowledgedBytesSoftLimit;
-        private int _nonAcknowledgedBytes;
+        private int _processingMessages;
+        private int _processingBytes;
 
-        public AsyncPublisherWithBuffer(IAsyncPublisher<TResult> decorated, int nonAcknowledgedBytesSoftLimit)
+        public AsyncPublisherWithBuffer(
+            IAsyncPublisher<TResult> decorated,
+            int processingMessagesLimit = int.MaxValue,
+            int processingBytesSoftLimit = int.MaxValue)
         {
+            if (processingMessagesLimit <= 0)
+            {
+                throw new ArgumentException("Positive number is expected.", nameof(processingMessagesLimit));
+            }
+
+            if (processingBytesSoftLimit <= 0)
+            {
+                throw new ArgumentException("Positive number is expected.", nameof(processingBytesSoftLimit));
+            }
+
             _decorated = decorated;
-            _nonAcknowledgedBytesSoftLimit = nonAcknowledgedBytesSoftLimit;
+            _processingMessagesLimit = processingMessagesLimit;
+            _processingBytesSoftLimit = processingBytesSoftLimit;
         }
+
+        private readonly SemaphoreSlim _semaphore = new SemaphoreSlim(1, 1);
 
         public async Task<TResult> PublishAsync(
             string exchange,
@@ -29,10 +47,34 @@ namespace RabbitMqAsyncPublisher
             CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            _manualResetEvent.Wait(cancellationToken);
+            try
+            {
+                await Task.WhenAny(
+                    Task.Delay(-1, CancellationToken.None),
+                    _semaphore.WaitAsync(cancellationToken)).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex)
+            {
+                if (ex.CancellationToken == cancellationToken)
+                {
+                    throw;
+                }
+            }
 
-            AddNonAcknowledgedBytes(body.Length);
+            ThrowIfDisposed();
+
+            lock (_semaphore)
+            {
+                _processingMessages += 1;
+                _processingBytes += body.Length;
+
+                if (_processingMessages < _processingMessagesLimit && _processingBytes < _processingBytesSoftLimit)
+                {
+                    _semaphore.Release();
+                }
+            }
 
             try
             {
@@ -40,7 +82,18 @@ namespace RabbitMqAsyncPublisher
             }
             finally
             {
-                AddNonAcknowledgedBytes(-body.Length);
+                lock (_semaphore)
+                {
+                    _processingMessages -= 1;
+                    _processingBytes -= body.Length;
+
+                    if (_processingMessages < _processingMessagesLimit
+                        && _processingBytes < _processingBytesSoftLimit
+                        && _semaphore.CurrentCount == 0)
+                    {
+                        _semaphore.Release();
+                    }
+                }
             }
         }
 
@@ -58,29 +111,6 @@ namespace RabbitMqAsyncPublisher
             if (_isDisposed)
             {
                 throw new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
-            }
-        }
-
-        private void AddNonAcknowledgedBytes(int bytes)
-        {
-            lock (_syncRoot)
-            {
-                _nonAcknowledgedBytes += bytes;
-
-                if (_nonAcknowledgedBytes > _nonAcknowledgedBytesSoftLimit)
-                {
-                    if (_manualResetEvent.IsSet)
-                    {
-                        _manualResetEvent.Reset();
-                    }
-
-                    return;
-                }
-
-                if (!_manualResetEvent.IsSet)
-                {
-                    _manualResetEvent.Set();
-                }
             }
         }
     }
