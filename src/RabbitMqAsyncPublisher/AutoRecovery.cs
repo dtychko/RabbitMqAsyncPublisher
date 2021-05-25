@@ -13,17 +13,17 @@ namespace RabbitMqAsyncPublisher
 
     public static class AutoRecovery
     {
-        public static AutoRecovery<AutoRecoveryResourceConnection> StartConnection(
+        public static AutoRecovery<AutoRecoveryConnection> StartConnection(
             IConnectionFactory connectionFactory,
             Func<int, TimeSpan> retryDelay,
             IAutoRecoveryDiagnostics diagnostics,
             params Func<IConnection, IDisposable>[] componentFactories)
         {
-            var autoRecovery = new AutoRecovery<AutoRecoveryResourceConnection>(
-                () => new AutoRecoveryResourceConnection(connectionFactory.CreateConnection(), diagnostics),
+            var autoRecovery = new AutoRecovery<AutoRecoveryConnection>(
+                () => new AutoRecoveryConnection(connectionFactory.CreateConnection(), diagnostics),
                 componentFactories
                     .Select(factory =>
-                        (Func<AutoRecoveryResourceConnection, IDisposable>) (connection => factory(connection.Value)))
+                        (Func<AutoRecoveryConnection, IDisposable>) (connection => factory(connection.Value)))
                     .ToArray(),
                 retryDelay,
                 diagnostics
@@ -38,17 +38,17 @@ namespace RabbitMqAsyncPublisher
             return connection => new AutoRecoveryConnectionHealthCheck(connection, checkInterval);
         }
 
-        public static AutoRecovery<AutoRecoveryResourceModel> StartModel(
+        public static AutoRecovery<AutoRecoveryModel> StartModel(
             IConnection connection,
             Func<int, TimeSpan> retryDelay,
             IAutoRecoveryDiagnostics diagnostics,
             params Func<IModel, IDisposable>[] componentFactories)
         {
-            var autoRecovery = new AutoRecovery<AutoRecoveryResourceModel>(
-                () => new AutoRecoveryResourceModel(connection.CreateModel(), diagnostics),
+            var autoRecovery = new AutoRecovery<AutoRecoveryModel>(
+                () => new AutoRecoveryModel(connection.CreateModel(), diagnostics),
                 componentFactories
                     .Select(factory =>
-                        (Func<AutoRecoveryResourceModel, IDisposable>) (model => factory(model.Value)))
+                        (Func<AutoRecoveryModel, IDisposable>) (model => factory(model.Value)))
                     .ToArray(),
                 retryDelay,
                 diagnostics
@@ -80,7 +80,7 @@ namespace RabbitMqAsyncPublisher
             IAutoRecoveryDiagnostics diagnostics = null)
             : this(createResource, componentFactories,
                 (retryNumber, cancellationToken) => Task.Delay(reconnectDelay(retryNumber), cancellationToken),
-                diagnostics ?? AutoRecoveryDiagnostics.NoDiagnostics)
+                diagnostics ?? AutoRecoveryEmptyDiagnostics.NoDiagnostics)
         {
         }
 

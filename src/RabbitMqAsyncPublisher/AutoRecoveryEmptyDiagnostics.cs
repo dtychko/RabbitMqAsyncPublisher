@@ -116,11 +116,11 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class AutoRecoveryDiagnostics : IAutoRecoveryDiagnostics
+    public class AutoRecoveryEmptyDiagnostics : IAutoRecoveryDiagnostics
     {
-        public static IAutoRecoveryDiagnostics NoDiagnostics = new AutoRecoveryDiagnostics();
+        public static IAutoRecoveryDiagnostics NoDiagnostics = new AutoRecoveryEmptyDiagnostics();
 
-        protected AutoRecoveryDiagnostics()
+        protected AutoRecoveryEmptyDiagnostics()
         {
         }
 

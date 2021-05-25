@@ -2,9 +2,9 @@
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IQueueBasedAsyncPublisherDiagnostics : IUnexpectedExceptionDiagnostics
+    public interface IAsyncPublisherDiagnostics : IUnexpectedExceptionDiagnostics
     {
-        void TrackPublishTaskEnqueued(PublishArgs publishArgs, QueueBasedAsyncPublisherStatus status);
+        void TrackPublishTaskEnqueued(PublishArgs publishArgs, AsyncPublisherStatus status);
 
         void TrackPublishStarted(PublishArgs publishArgs, ulong deliveryTag);
 
@@ -12,7 +12,7 @@ namespace RabbitMqAsyncPublisher
 
         void TrackPublishFailed(PublishArgs publishArgs, ulong deliveryTag, TimeSpan duration, Exception ex);
 
-        void TrackAckTaskEnqueued(AckArgs ackArgs, QueueBasedAsyncPublisherStatus status);
+        void TrackAckTaskEnqueued(AckArgs ackArgs, AsyncPublisherStatus status);
 
         void TrackAckStarted(AckArgs ackArgs);
 
@@ -22,16 +22,16 @@ namespace RabbitMqAsyncPublisher
 
         void TrackDisposeSucceeded(TimeSpan duration);
 
-        void TrackStatus(QueueBasedAsyncPublisherStatus status);
+        void TrackStatus(AsyncPublisherStatus status);
     }
 
-    public class QueueBasedAsyncPublisherStatus
+    public class AsyncPublisherStatus
     {
         public int PublishQueueSize { get; }
         public int AckQueueSize { get; }
         public int CompletionSourceRegistrySize { get; }
 
-        public QueueBasedAsyncPublisherStatus(int publishQueueSize, int ackQueueSize, int completionSourceRegistrySize)
+        public AsyncPublisherStatus(int publishQueueSize, int ackQueueSize, int completionSourceRegistrySize)
         {
             PublishQueueSize = publishQueueSize;
             AckQueueSize = ackQueueSize;
@@ -58,12 +58,12 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class QueueBasedAsyncPublisherDiagnostics : IQueueBasedAsyncPublisherDiagnostics
+    public class AsyncPublisherEmptyDiagnostics : IAsyncPublisherDiagnostics
     {
-        public static readonly IQueueBasedAsyncPublisherDiagnostics NoDiagnostics =
-            new QueueBasedAsyncPublisherDiagnostics();
+        public static readonly IAsyncPublisherDiagnostics NoDiagnostics =
+            new AsyncPublisherEmptyDiagnostics();
 
-        protected QueueBasedAsyncPublisherDiagnostics()
+        protected AsyncPublisherEmptyDiagnostics()
         {
         }
 
@@ -71,7 +71,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackPublishTaskEnqueued(PublishArgs publishArgs, QueueBasedAsyncPublisherStatus status)
+        public virtual void TrackPublishTaskEnqueued(PublishArgs publishArgs, AsyncPublisherStatus status)
         {
         }
 
@@ -88,7 +88,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackAckTaskEnqueued(AckArgs ackArgs, QueueBasedAsyncPublisherStatus status)
+        public virtual void TrackAckTaskEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
         {
         }
 
@@ -108,19 +108,19 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackStatus(QueueBasedAsyncPublisherStatus status)
+        public virtual void TrackStatus(AsyncPublisherStatus status)
         {
         }
     }
 
-    public class ConsoleQueueBasedAsyncPublisherDiagnostics : IQueueBasedAsyncPublisherDiagnostics
+    public class AsyncPublisherConsoleDiagnostics : IAsyncPublisherDiagnostics
     {
         public void TrackUnexpectedException(string message, Exception ex)
         {
             Console.WriteLine($" >> {nameof(TrackUnexpectedException)}: {message} {ex}");
         }
 
-        public void TrackPublishTaskEnqueued(PublishArgs publishArgs, QueueBasedAsyncPublisherStatus status)
+        public void TrackPublishTaskEnqueued(PublishArgs publishArgs, AsyncPublisherStatus status)
         {
             Console.WriteLine($" >> {nameof(TrackPublishTaskEnqueued)}: {status}");
         }
@@ -140,7 +140,7 @@ namespace RabbitMqAsyncPublisher
             Console.WriteLine($" >> {nameof(TrackPublishFailed)}: {deliveryTag} in {duration.TotalMilliseconds}ms {ex}");
         }
 
-        public void TrackAckTaskEnqueued(AckArgs ackArgs, QueueBasedAsyncPublisherStatus status)
+        public void TrackAckTaskEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
         {
             Console.WriteLine($" >> {nameof(TrackAckTaskEnqueued)}: {ackArgs.DeliveryTag}, {status}");
         }
@@ -157,17 +157,17 @@ namespace RabbitMqAsyncPublisher
 
         public void TrackDisposeStarted()
         {
-            Console.WriteLine($" >> {nameof(QueueBasedAsyncPublisher)}/{nameof(TrackDisposeStarted)}");
+            Console.WriteLine($" >> {nameof(AsyncPublisher)}/{nameof(TrackDisposeStarted)}");
         }
 
         public void TrackDisposeSucceeded(TimeSpan duration)
         {
-            Console.WriteLine($" >> {nameof(QueueBasedAsyncPublisher)}/{nameof(TrackDisposeSucceeded)} in {duration.TotalMilliseconds}");
+            Console.WriteLine($" >> {nameof(AsyncPublisher)}/{nameof(TrackDisposeSucceeded)} in {duration.TotalMilliseconds}");
         }
 
-        public void TrackStatus(QueueBasedAsyncPublisherStatus status)
+        public void TrackStatus(AsyncPublisherStatus status)
         {
-            Console.WriteLine($" >> {nameof(QueueBasedAsyncPublisher)}/{nameof(TrackStatus)}: {status}");
+            Console.WriteLine($" >> {nameof(AsyncPublisher)}/{nameof(TrackStatus)}: {status}");
         }
     }
 }

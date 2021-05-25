@@ -4,49 +4,6 @@ using RabbitMQ.Client.Events;
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IAsyncPublisherDiagnostics
-    {
-        void TrackBasicAcksEventProcessing(BasicAckEventArgs args);
-
-        void TrackBasicAcksEventProcessingFailed(BasicAckEventArgs args, TimeSpan duration, Exception ex);
-
-        void TrackBasicAcksEventProcessingCompleted(BasicAckEventArgs args, TimeSpan duration);
-
-        void TrackBasicNacksEventProcessing(BasicNackEventArgs args);
-
-        void TrackBasicNacksEventProcessingFailed(BasicNackEventArgs args, TimeSpan duration, Exception ex);
-
-        void TrackBasicNacksEventProcessingCompleted(BasicNackEventArgs args, TimeSpan duration);
-
-        void TrackModelShutdownEventProcessing(ShutdownEventArgs args);
-
-        void TrackModelShutdownEventProcessingFailed(ShutdownEventArgs args, TimeSpan duration, Exception ex);
-
-        void TrackModelShutdownEventProcessingCompleted(ShutdownEventArgs args, TimeSpan duration);
-
-        void TrackRecoveryEventProcessing();
-
-        void TrackRecoveryEventProcessingFailed(TimeSpan duration, Exception ex);
-
-        void TrackRecoveryEventProcessingCompleted(TimeSpan duration);
-
-        void TrackPublishUnsafe(PublishUnsafeArgs args);
-
-        void TrackPublishUnsafeCanceled(PublishUnsafeArgs args, TimeSpan duration);
-
-        void TrackPublishUnsafeFailed(PublishUnsafeArgs args, TimeSpan duration, Exception ex);
-
-        void TrackPublishUnsafeBasicPublishCompleted(PublishUnsafeArgs args, TimeSpan duration);
-
-        void TrackPublishUnsafeCompleted(PublishUnsafeArgs args, TimeSpan duration, bool acknowledged);
-
-        void TrackCompletionSourceRegistrySize(int size);
-
-        void TrackDispose();
-
-        void TrackDisposeCompleted();
-    }
-
     public interface IAsyncPublisherWithRetriesDiagnostics
     {
         void TrackPublishUnsafeAttempt(PublishUnsafeAttemptArgs args);
@@ -115,7 +72,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class ConsoleAsyncPublisherWithRetriesDiagnostics : IAsyncPublisherWithRetriesDiagnostics
+    public class AsyncPublisherWithRetriesConsoleDiagnostics : IAsyncPublisherWithRetriesDiagnostics
     {
         public void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration,
             Exception ex)
@@ -146,7 +103,7 @@ namespace RabbitMqAsyncPublisher
 
     }
 
-    public class EmptyDiagnostics : IAsyncPublisherDiagnostics, IAsyncPublisherWithRetriesDiagnostics
+    public class EmptyDiagnostics : IAsyncPublisherWithRetriesDiagnostics
     {
         public static readonly EmptyDiagnostics Instance = new EmptyDiagnostics();
 

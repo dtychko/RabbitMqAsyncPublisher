@@ -21,7 +21,7 @@ namespace RabbitMqAsyncPublisher
             _nonAcknowledgedBytesSoftLimit = nonAcknowledgedBytesSoftLimit;
         }
 
-        public async Task<TResult> PublishUnsafeAsync(
+        public async Task<TResult> PublishAsync(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
@@ -36,7 +36,7 @@ namespace RabbitMqAsyncPublisher
 
             try
             {
-                return await _decorated.PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken);
+                return await _decorated.PublishAsync(exchange, routingKey, body, properties, cancellationToken);
             }
             finally
             {

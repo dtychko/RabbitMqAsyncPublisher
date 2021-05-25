@@ -86,7 +86,7 @@ namespace RabbitMqAsyncPublisher
 
             using (var publisherProxy = new AsyncPublisherProxy<bool>())
             using (var retryingPublisher = new AsyncPublisherWithRetries(
-                publisherProxy, TimeSpan.FromSeconds(3), new ConsoleAsyncPublisherWithRetriesDiagnostics()))
+                publisherProxy, TimeSpan.FromSeconds(3), new AsyncPublisherWithRetriesConsoleDiagnostics()))
             {
                 using (AutoRecovery.StartConnection(
                     connectionFactory,
@@ -103,8 +103,8 @@ namespace RabbitMqAsyncPublisher
                             {
                                 model.ConfirmSelect();
                                 
-                                var innerPublisher = new QueueBasedAsyncPublisher(model,
-                                    new ConsoleQueueBasedAsyncPublisherDiagnostics());
+                                var innerPublisher = new AsyncPublisher(model,
+                                    new AsyncPublisherConsoleDiagnostics());
                                 publisherProxy.SetImplementation(innerPublisher);
 
                                 return new Disposable(() =>
@@ -119,7 +119,7 @@ namespace RabbitMqAsyncPublisher
                     foreach (var message in Utils.GenerateMessages(100, 10240))
                     {
                         Console.WriteLine("Sending next message");
-                        retryingPublisher.PublishUnsafeAsync("", "test.queue", message, Utils.CreateBasicProperties(),
+                        retryingPublisher.PublishAsync("", "test.queue", message, Utils.CreateBasicProperties(),
                                 default)
                             .Wait();
                         Console.WriteLine("Sent message");
@@ -178,7 +178,7 @@ namespace RabbitMqAsyncPublisher
                 model.ConfirmSelect();
                 model.QueueDeclare(QueueName, true, false, false);
 
-                var publisher = new QueueBasedAsyncPublisher(model);
+                var publisher = new AsyncPublisher(model);
 
                 for (var i = 0; i < 1000; i++)
                 {
@@ -189,7 +189,7 @@ namespace RabbitMqAsyncPublisher
                         properties.Persistent = true;
                         Console.WriteLine(
                             $" ** [{Thread.CurrentThread.ManagedThreadId}] Next seqno: {model.NextPublishSeqNo}");
-                        publisher.PublishUnsafeAsync(
+                        publisher.PublishAsync(
                                 "",
                                 QueueName,
                                 Encoding.UTF8.GetBytes(Utils.GenerateString(1024)),
@@ -275,7 +275,7 @@ namespace RabbitMqAsyncPublisher
             // var publisher = new AsyncRetryingPublisher(new AsyncPublisher(model, QueueName));
             var publisher = new AsyncPublisherAdapter<bool>(
                 // new AsyncPublisherSyncDecorator<bool>(
-                new QueueBasedAsyncPublisher(model),
+                new AsyncPublisher(model),
                 // ),
                 "test_exchange",
                 "some topic"
@@ -341,7 +341,7 @@ namespace RabbitMqAsyncPublisher
 
         public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, IBasicProperties properties)
         {
-            return _publisher.PublishUnsafeAsync(_exchange, _queueName, message, properties, CancellationToken.None);
+            return _publisher.PublishAsync(_exchange, _queueName, message, properties, CancellationToken.None);
         }
     }
 }

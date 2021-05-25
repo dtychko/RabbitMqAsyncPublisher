@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -9,38 +10,32 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IAsyncPublisher<TResult> : IDisposable
-    {
-        Task<TResult> PublishUnsafeAsync(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
-            CancellationToken cancellationToken);
-    }
+    using static DiagnosticsUtils;
 
-    /// <summary>
-    /// Limitations:
-    /// 1. Doesn't listen to "IModel.BasicReturn" event, as results doesn't handle "returned" messages
-    /// </summary>
     public class AsyncPublisher : IAsyncPublisher<bool>
     {
         private readonly IAsyncPublisherDiagnostics _diagnostics;
+        private readonly ConcurrentQueue<PublishQueueItem> _publishQueue = new ConcurrentQueue<PublishQueueItem>();
+        private readonly ConcurrentQueue<AckQueueItem> _ackQueue = new ConcurrentQueue<AckQueueItem>();
 
-        private readonly AsyncPublisherTaskCompletionSourceRegistry _taskCompletionSourceRegistry =
+        private readonly AsyncPublisherTaskCompletionSourceRegistry _completionSourceRegistry =
             new AsyncPublisherTaskCompletionSourceRegistry();
 
-        private ShutdownEventArgs _shutdownEventArgs;
-        private int _isDisposed;
+        private volatile int _publishQueueSize;
+        private volatile int _ackQueueSize;
+        private int _completionSourceRegistrySize;
+
+        private readonly AsyncManualResetEvent _publishEvent = new AsyncManualResetEvent(false);
+        private readonly AsyncManualResetEvent _ackEvent = new AsyncManualResetEvent(false);
+
+        private readonly Task _publishLoop;
+        private readonly Task _ackLoop;
+
+        private volatile int _isDisposed;
 
         public IModel Model { get; }
 
-        public AsyncPublisher(IModel model)
-            : this(model, EmptyDiagnostics.Instance)
-        {
-        }
-
-        public AsyncPublisher(IModel model, IAsyncPublisherDiagnostics diagnostics)
+        public AsyncPublisher(IModel model, IAsyncPublisherDiagnostics diagnostics = null)
         {
             // Heuristic based on reverse engineering of "RabbitMQ.Client" lib
             // that helps to make sure that "ConfirmSelect" method was called on the model
@@ -49,297 +44,381 @@ namespace RabbitMqAsyncPublisher
             {
                 throw new ArgumentException("Channel should be in confirm mode.");
             }
-
+            
             Model = model;
-            _diagnostics = diagnostics;
+            _diagnostics = diagnostics ?? AsyncPublisherEmptyDiagnostics.NoDiagnostics;
 
+            // TODO: Make sure that "BasicAcks" and "BasicNacks" events are always fired on a single thread.
             Model.BasicAcks += OnBasicAcks;
             Model.BasicNacks += OnBasicNacks;
-            Model.ModelShutdown += OnModelShutdown;
 
-            if (Model is IRecoverable recoverableModel)
+            _publishLoop = Task.Run(StartPublishLoop);
+            _ackLoop = Task.Run(StartAckLoop);
+        }
+
+        private void OnBasicAcks(object sender, BasicAckEventArgs e)
+        {
+            EnqueueAck(new AckQueueItem(e.DeliveryTag, e.Multiple, true));
+            TrackSafe(_diagnostics.TrackAckTaskEnqueued,
+                new AckArgs(e.DeliveryTag, e.Multiple, true),
+                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
+            _ackEvent.SetAsync();
+        }
+
+        private void OnBasicNacks(object sender, BasicNackEventArgs e)
+        {
+            EnqueueAck(new AckQueueItem(e.DeliveryTag, e.Multiple, false));
+            TrackSafe(_diagnostics.TrackAckTaskEnqueued,
+                new AckArgs(e.DeliveryTag, e.Multiple, false),
+                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
+            _ackEvent.SetAsync();
+        }
+
+        private async void StartPublishLoop()
+        {
+            try
             {
-                recoverableModel.Recovery += OnRecovery;
+                await _publishEvent.WaitAsync().ConfigureAwait(false);
+                TrackStatusSafe();
+
+                while (_isDisposed == 0 || _publishQueueSize > 0)
+                {
+                    _publishEvent.Reset();
+                    RunPublishInnerLoop();
+                    await _publishEvent.WaitAsync().ConfigureAwait(false);
+                    TrackStatusSafe();
+                }
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    "Unexpected publish loop exception: " +
+                    $"publishQueueSize={_publishQueueSize}; ackQueueSize={_ackQueueSize}; completionSourceRegistrySize={_completionSourceRegistrySize}",
+                    ex);
+
+                // TODO: ? Move publisher to state when it throws on each attempt to publish a message
+                // TODO: ? Restart the loop after some delay
             }
         }
 
-        private void OnBasicAcks(object sender, BasicAckEventArgs args)
+        private async void StartAckLoop()
         {
-            ProcessEvent(
-                () => ProcessDeliveryTag(args.DeliveryTag, args.Multiple, true),
-                () => _diagnostics.TrackBasicAcksEventProcessing(args),
-                duration => _diagnostics.TrackBasicAcksEventProcessingCompleted(args, duration),
-                (duration, ex) => _diagnostics.TrackBasicAcksEventProcessingFailed(args, duration, ex)
-            );
-        }
-
-        private void OnBasicNacks(object sender, BasicNackEventArgs args)
-        {
-            ProcessEvent(
-                () => ProcessDeliveryTag(args.DeliveryTag, args.Multiple, false),
-                () => _diagnostics.TrackBasicNacksEventProcessing(args),
-                duration => _diagnostics.TrackBasicNacksEventProcessingCompleted(args, duration),
-                (duration, ex) => _diagnostics.TrackBasicNacksEventProcessingFailed(args, duration, ex)
-            );
-        }
-
-        private void ProcessDeliveryTag(ulong deliveryTag, bool multiple, bool ack)
-        {
-            lock (_taskCompletionSourceRegistry)
+            try
             {
-                if (!multiple)
-                {
-                    if (_taskCompletionSourceRegistry.TryRemoveSingle(deliveryTag, out var source))
-                    {
-                        Task.Run(() => source.TrySetResult(ack));
-                    }
-                }
-                else
-                {
-                    foreach (var source in _taskCompletionSourceRegistry.RemoveAllUpTo(deliveryTag))
-                    {
-                        Task.Run(() => source.TrySetResult(ack));
-                    }
-                }
+                await _ackEvent.WaitAsync().ConfigureAwait(false);
+                TrackStatusSafe();
 
-                _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
+                while (_isDisposed == 0 || _ackQueueSize > 0)
+                {
+                    _ackEvent.Reset();
+                    RunAckInnerLoop();
+                    await _ackEvent.WaitAsync().ConfigureAwait(false);
+                    TrackStatusSafe();
+                }
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    "Unexpected ack loop exception: " +
+                    $"publishQueueSize={_publishQueueSize}; ackQueueSize={_ackQueueSize}; completionSourceRegistrySize={_completionSourceRegistrySize}",
+                    ex);
+
+                // TODO: ? Move publisher to state when it throws on each attempt to publish a message
+                // TODO: ? Restart the loop after some delay
             }
         }
 
-        private void OnModelShutdown(object sender, ShutdownEventArgs args)
+        private void TrackStatusSafe()
         {
-            ProcessEvent(
-                () =>
-                {
-                    lock (_taskCompletionSourceRegistry)
-                    {
-                        _shutdownEventArgs = args;
+            TrackSafe(_diagnostics.TrackStatus,
+                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize,
+                    _completionSourceRegistrySize));
+        }
 
-                        foreach (var source in _taskCompletionSourceRegistry.RemoveAll())
+        private void RunPublishInnerLoop()
+        {
+            while (TryDequeuePublish(out var publishQueueItem))
+            {
+                var cancellationToken = publishQueueItem.CancellationToken;
+                var taskCompletionSource = publishQueueItem.TaskCompletionSource;
+                ulong seqNo;
+
+                try
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        Task.Run(() => taskCompletionSource.TrySetCanceled());
+                        continue;
+                    }
+
+                    if (_isDisposed == 1)
+                    {
+                        Task.Run(() =>
+                            taskCompletionSource.TrySetException(
+                                new ObjectDisposedException(nameof(AsyncPublisher))));
+                        continue;
+                    }
+
+                    if (IsModelClosed(out var shutdownEventArgs))
+                    {
+                        Task.Run(() =>
+                            taskCompletionSource.TrySetException(new AlreadyClosedException(shutdownEventArgs)));
+                        continue;
+                    }
+
+                    if (cancellationToken.CanBeCanceled)
+                    {
+                        var registration = cancellationToken.Register(() =>
                         {
-                            Task.Run(() => source.TrySetException(new AlreadyClosedException(args)));
-                        }
-
-                        _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
+                            Task.Run(() => taskCompletionSource.TrySetCanceled());
+                        });
+                        taskCompletionSource.Task.ContinueWith(_ => { registration.Dispose(); });
                     }
-                },
-                () => _diagnostics.TrackModelShutdownEventProcessing(args),
-                duration => _diagnostics.TrackModelShutdownEventProcessingCompleted(args, duration),
-                (duration, ex) => _diagnostics.TrackModelShutdownEventProcessingFailed(args, duration, ex)
-            );
-        }
 
-        private void OnRecovery(object sender, EventArgs args)
-        {
-            ProcessEvent(
-                () =>
+                    seqNo = Model.NextPublishSeqNo;
+                }
+                catch (Exception ex)
                 {
-                    lock (_taskCompletionSourceRegistry)
-                    {
-                        _shutdownEventArgs = null;
-                    }
-                },
-                () => _diagnostics.TrackRecoveryEventProcessing(),
-                duration => _diagnostics.TrackRecoveryEventProcessingCompleted(duration),
-                (duration, ex) => _diagnostics.TrackRecoveryEventProcessingFailed(duration, ex));
+                    TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to start message publishing.", ex);
+                    Task.Run(() => taskCompletionSource.TrySetException(ex));
+                    continue;
+                }
+
+                var publishArgs = new PublishArgs(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
+                    publishQueueItem.Body, publishQueueItem.Properties);
+                TrackSafe(_diagnostics.TrackPublishStarted, publishArgs, seqNo);
+                var stopwatch = Stopwatch.StartNew();
+
+                try
+                {
+                    RegisterTaskCompletionSource(seqNo, taskCompletionSource);
+                    Model.BasicPublish(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
+                        publishQueueItem.Properties, publishQueueItem.Body);
+                }
+                catch (Exception ex)
+                {
+                    TrackSafe(_diagnostics.TrackPublishFailed, publishArgs, seqNo, stopwatch.Elapsed, ex);
+                    TryRemoveSingleTaskCompletionSource(seqNo, out _);
+                    Task.Run(() => taskCompletionSource.TrySetException(ex));
+                    continue;
+                }
+
+                TrackSafe(_diagnostics.TrackPublishSucceeded, publishArgs, seqNo, stopwatch.Elapsed);
+            }
         }
 
-        public async Task<bool> PublishUnsafeAsync(
+        private void RunAckInnerLoop()
+        {
+            while (TryDequeueAck(out var ackQueueItem))
+            {
+                var deliveryTag = ackQueueItem.DeliveryTag;
+                var multiple = ackQueueItem.Multiple;
+                var ack = ackQueueItem.Ack;
+
+                var ackArgs = new AckArgs(deliveryTag, multiple, ack);
+                TrackSafe(_diagnostics.TrackAckStarted, ackArgs);
+                var stopwatch = Stopwatch.StartNew();
+
+                try
+                {
+                    if (!multiple)
+                    {
+                        if (TryRemoveSingleTaskCompletionSource(deliveryTag, out var source))
+                        {
+                            Task.Run(() => source.TrySetResult(ack));
+                        }
+                    }
+                    else
+                    {
+                        foreach (var source in RemoveAllTaskCompletionSourcesUpTo(deliveryTag))
+                        {
+                            Task.Run(() => source.TrySetResult(ack));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    TrackSafe(_diagnostics.TrackUnexpectedException,
+                        $"Unable to process ack queue item: deliveryTag={deliveryTag}; multiple={multiple}; ack={ack}.",
+                        ex);
+                    continue;
+                }
+
+                TrackSafe(_diagnostics.TrackAckSucceeded, ackArgs, stopwatch.Elapsed);
+            }
+        }
+
+        public Task<bool> PublishAsync(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
 
-            var args = new PublishUnsafeArgs(exchange, routingKey, body, properties, Model.NextPublishSeqNo);
-            _diagnostics.TrackPublishUnsafe(args);
-            var stopwatch = Stopwatch.StartNew();
+            var taskCompletionSource = new TaskCompletionSource<bool>();
+            var queueItem = new PublishQueueItem(exchange, routingKey, body, properties, cancellationToken,
+                taskCompletionSource);
 
-            ulong seqNo;
-
-            try
+            lock (_publishQueue)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                TaskCompletionSource<bool> publishTaskCompletionSource;
-
-                // Lock here is used to synchronize Publish calls, which can come from different threads,
-                // with RabbitMQ lifecycle events (Ack, Nack, Shutdown, etc.), which are handled on a single thread.
-                // If we don't do that we can have race conditions when some tasks are not cleared on shutdown.
-                // TODO: think about replacing with kind of PriorityLock (PrioritySemaphore)
-                // TODO: in order to process model events with higher priority than publish requests
-                lock (_taskCompletionSourceRegistry)
+                if (_isDisposed == 1)
                 {
-                    if (!(_shutdownEventArgs is null))
-                    {
-                        throw new AlreadyClosedException(_shutdownEventArgs);
-                    }
-
-                    seqNo = Model.NextPublishSeqNo;
-                    Model.BasicPublish(exchange, routingKey, properties, body);
-                    publishTaskCompletionSource = _taskCompletionSourceRegistry.Register(seqNo);
-
-                    _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
+                    throw new ObjectDisposedException(nameof(AsyncPublisher));
                 }
 
-                _diagnostics.TrackPublishUnsafeBasicPublishCompleted(args, stopwatch.Elapsed);
-
-                using (cancellationToken.Register(() =>
-                    // ReSharper disable once MethodSupportsCancellation
-                    Task.Run(() =>
-                    {
-                        lock (_taskCompletionSourceRegistry)
-                        {
-                            _taskCompletionSourceRegistry.TryRemoveSingle(seqNo, out _);
-                        }
-
-                        return publishTaskCompletionSource.TrySetCanceled(cancellationToken);
-                    })))
-                {
-                    var acknowledged = await publishTaskCompletionSource.Task;
-                    _diagnostics.TrackPublishUnsafeCompleted(args, stopwatch.Elapsed, acknowledged);
-
-                    return acknowledged;
-                }
+                EnqueuePublish(queueItem);
             }
-            catch (OperationCanceledException)
-            {
-                _diagnostics.TrackPublishUnsafeCanceled(args, stopwatch.Elapsed);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _diagnostics.TrackPublishUnsafeFailed(args, stopwatch.Elapsed, ex);
-                throw;
-            }
-        }
 
-        private static void ProcessEvent(
-            Action process,
-            Action onProcessing,
-            Action<TimeSpan> onProcessingCompleted,
-            Action<TimeSpan, Exception> onProcessingFailed)
-        {
-            onProcessing();
-            var stopwatch = Stopwatch.StartNew();
+            TrackSafe(_diagnostics.TrackPublishTaskEnqueued,
+                new PublishArgs(exchange, routingKey, body, properties),
+                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
+            _publishEvent.SetAsync();
 
-            try
-            {
-                process();
-                onProcessingCompleted(stopwatch.Elapsed);
-            }
-            catch (Exception ex)
-            {
-                onProcessingFailed(stopwatch.Elapsed, ex);
-            }
+            return taskCompletionSource.Task;
         }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _isDisposed, 1) != 0)
+            bool shouldDispose;
+
+            lock (_publishQueue)
             {
+                shouldDispose = _isDisposed == 0;
+                _isDisposed = 1;
+            }
+
+            if (!shouldDispose)
+            {
+                Task.WaitAll(_publishLoop, _ackLoop);
                 return;
             }
 
-            _diagnostics.TrackDispose();
+            TrackSafe(_diagnostics.TrackDisposeStarted);
+            var stopwatch = Stopwatch.StartNew();
 
             Model.BasicAcks -= OnBasicAcks;
             Model.BasicNacks -= OnBasicNacks;
-            Model.ModelShutdown -= OnModelShutdown;
 
-            lock (_taskCompletionSourceRegistry)
+            Task.WaitAll(_publishEvent.SetAsync(), _ackEvent.SetAsync(), _publishLoop, _ackLoop);
+
+            foreach (var source in RemoveAllTaskCompletionSourcesUpTo(ulong.MaxValue))
             {
-                foreach (var source in _taskCompletionSourceRegistry.RemoveAll())
+                Task.Run(() => source.TrySetException(new ObjectDisposedException(nameof(AsyncPublisher))));
+            }
+
+            TrackSafe(_diagnostics.TrackDisposeSucceeded, stopwatch.Elapsed);
+        }
+
+        private void RegisterTaskCompletionSource(ulong deliveryTag, TaskCompletionSource<bool> taskCompletionSource)
+        {
+            lock (_completionSourceRegistry)
+            {
+                Interlocked.Increment(ref _completionSourceRegistrySize);
+                _completionSourceRegistry.Register(deliveryTag, taskCompletionSource);
+            }
+        }
+
+        private bool TryRemoveSingleTaskCompletionSource(ulong deliveryTag,
+            out TaskCompletionSource<bool> taskCompletionSource)
+        {
+            lock (_completionSourceRegistry)
+            {
+                if (_completionSourceRegistry.TryRemoveSingle(deliveryTag, out taskCompletionSource))
                 {
-                    Task.Run(() => source.TrySetException(new ObjectDisposedException(nameof(AsyncPublisher))));
+                    Interlocked.Decrement(ref _completionSourceRegistrySize);
+                    return true;
                 }
 
-                _diagnostics.TrackCompletionSourceRegistrySize(_taskCompletionSourceRegistry.Count);
-            }
-
-            _diagnostics.TrackDisposeCompleted();
-        }
-
-        private void ThrowIfDisposed()
-        {
-            if (_isDisposed == 1)
-            {
-                throw new ObjectDisposedException(nameof(AsyncPublisher));
+                return false;
             }
         }
-    }
 
-    internal class AsyncPublisherTaskCompletionSourceRegistry
-    {
-        private readonly Dictionary<ulong, SourceEntry> _sources = new Dictionary<ulong, SourceEntry>();
-        private readonly LinkedList<ulong> _deliveryTagQueue = new LinkedList<ulong>();
-
-        public int Count => _sources.Count;
-
-        public TaskCompletionSource<bool> Register(ulong deliveryTag)
+        private IReadOnlyList<TaskCompletionSource<bool>> RemoveAllTaskCompletionSourcesUpTo(ulong deliveryTag)
         {
-            var taskCompletionSource = new TaskCompletionSource<bool>();
-            _sources[deliveryTag] = new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag));
-            return taskCompletionSource;
-        }
-
-        public TaskCompletionSource<bool> Register(ulong deliveryTag, TaskCompletionSource<bool> taskCompletionSource)
-        {
-            _sources[deliveryTag] = new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag));
-            return taskCompletionSource;
-        }
-
-        public bool TryRemoveSingle(ulong deliveryTag, out TaskCompletionSource<bool> source)
-        {
-            if (_sources.TryGetValue(deliveryTag, out var entry))
+            lock (_completionSourceRegistry)
             {
-                _sources.Remove(deliveryTag);
-                _deliveryTagQueue.Remove(entry.QueueNode);
-                source = entry.Source;
+                var result = _completionSourceRegistry.RemoveAllUpTo(deliveryTag);
+                Interlocked.Add(ref _completionSourceRegistrySize, -result.Count);
+                return result;
+            }
+        }
+
+        private void EnqueueAck(AckQueueItem item)
+        {
+            Interlocked.Increment(ref _ackQueueSize);
+            _ackQueue.Enqueue(item);
+        }
+
+        private bool TryDequeueAck(out AckQueueItem item)
+        {
+            if (_ackQueue.TryDequeue(out item))
+            {
+                Interlocked.Decrement(ref _ackQueueSize);
                 return true;
             }
 
-            source = default;
             return false;
         }
 
-        // ReSharper disable once ReturnTypeCanBeEnumerable.Global
-        public IReadOnlyList<TaskCompletionSource<bool>> RemoveAll()
+        private void EnqueuePublish(PublishQueueItem item)
         {
-            return RemoveAllUpTo(ulong.MaxValue);
+            Interlocked.Increment(ref _publishQueueSize);
+            _publishQueue.Enqueue(item);
         }
 
-        // ReSharper disable once ReturnTypeCanBeEnumerable.Global
-        public IReadOnlyList<TaskCompletionSource<bool>> RemoveAllUpTo(ulong deliveryTag)
+        private bool TryDequeuePublish(out PublishQueueItem item)
         {
-            var result = new List<TaskCompletionSource<bool>>();
-
-            while (_deliveryTagQueue.Count > 0 && _deliveryTagQueue.First.Value <= deliveryTag)
+            if (_publishQueue.TryDequeue(out item))
             {
-                if (_sources.TryGetValue(_deliveryTagQueue.First.Value, out var entry))
-                {
-                    _sources.Remove(_deliveryTagQueue.First.Value);
-                    result.Add(entry.Source);
-                }
-
-                _deliveryTagQueue.RemoveFirst();
+                Interlocked.Decrement(ref _publishQueueSize);
+                return true;
             }
 
-            return result;
+            return false;
         }
 
-        private readonly struct SourceEntry
+        private bool IsModelClosed(out ShutdownEventArgs shutdownEventArgs)
         {
-            public TaskCompletionSource<bool> Source { get; }
+            shutdownEventArgs = default;
+            Interlocked.Exchange(ref shutdownEventArgs, Model.CloseReason);
+            return !(shutdownEventArgs is null);
+        }
 
-            public LinkedListNode<ulong> QueueNode { get; }
+        private class PublishQueueItem
+        {
+            public string Exchange { get; }
+            public string RoutingKey { get; }
+            public ReadOnlyMemory<byte> Body { get; }
+            public IBasicProperties Properties { get; }
+            public CancellationToken CancellationToken { get; }
+            public TaskCompletionSource<bool> TaskCompletionSource { get; }
 
-            public SourceEntry(TaskCompletionSource<bool> source, LinkedListNode<ulong> queueNode)
+            public PublishQueueItem(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+                IBasicProperties properties, CancellationToken cancellationToken,
+                TaskCompletionSource<bool> taskCompletionSource)
             {
-                Source = source;
-                QueueNode = queueNode;
+                Exchange = exchange;
+                RoutingKey = routingKey;
+                Body = body;
+                Properties = properties;
+                CancellationToken = cancellationToken;
+                TaskCompletionSource = taskCompletionSource;
+            }
+        }
+
+        private class AckQueueItem
+        {
+            public ulong DeliveryTag { get; }
+            public bool Multiple { get; }
+            public bool Ack { get; }
+
+            public AckQueueItem(ulong deliveryTag, bool multiple, bool ack)
+            {
+                DeliveryTag = deliveryTag;
+                Multiple = multiple;
+                Ack = ack;
             }
         }
     }

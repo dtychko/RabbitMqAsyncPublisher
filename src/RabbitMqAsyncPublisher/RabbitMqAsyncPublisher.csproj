@@ -70,22 +70,21 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="AsyncManualResetEvent.cs" />
-        <Compile Include="AsyncPublisher.cs" />
+        <Compile Include="IAsyncPublisher.cs" />
         <Compile Include="AsyncPublisherProxy.cs" />
-        <Compile Include="AsyncPublisherSyncDecorator.cs" />
+        <Compile Include="AsyncPublisherTaskCompletionSourceRegistry.cs" />
         <Compile Include="AsyncPublisherWithBuffer.cs" />
         <Compile Include="AsyncPublisherWithRetries.cs" />
         <Compile Include="AutoRecovery.cs" />
         <Compile Include="AutoRecoveryConnectionHealthCheck.cs" />
-        <Compile Include="AutoRecoveryDiagnostics.cs" />
+        <Compile Include="AutoRecoveryEmptyDiagnostics.cs" />
         <Compile Include="AutoRecoveryResource.cs" />
         <Compile Include="ClosedAsyncPublisher.cs" />
         <Compile Include="Diagnostics.cs" />
         <Compile Include="Program.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />
-        <Compile Include="QueueBasedAsyncPublisher.cs" />
+        <Compile Include="AsyncPublisher.cs" />
         <Compile Include="QueueBasedAsyncPublisherDiagnostics.cs" />
-        <Compile Include="QueueBasedAsyncPublisherWithRetries.cs" />
         <Compile Include="SyncPublisher.cs" />
         <Compile Include="Utils.cs" />
     </ItemGroup>

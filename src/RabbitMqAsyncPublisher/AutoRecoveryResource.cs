@@ -12,7 +12,7 @@ namespace RabbitMqAsyncPublisher
         event EventHandler<ShutdownEventArgs> Shutdown;
     }
 
-    public class AutoRecoveryResourceConnection : IAutoRecoveryResource
+    public class AutoRecoveryConnection : IAutoRecoveryResource
     {
         private readonly IUnexpectedExceptionDiagnostics _diagnostics;
 
@@ -20,12 +20,12 @@ namespace RabbitMqAsyncPublisher
 
         public ShutdownEventArgs CloseReason => Value.CloseReason;
 
-        public AutoRecoveryResourceConnection(IConnection connection)
-            : this(connection, AutoRecoveryDiagnostics.NoDiagnostics)
+        public AutoRecoveryConnection(IConnection connection)
+            : this(connection, AutoRecoveryEmptyDiagnostics.NoDiagnostics)
         {
         }
 
-        public AutoRecoveryResourceConnection(IConnection connection, IUnexpectedExceptionDiagnostics diagnostics)
+        public AutoRecoveryConnection(IConnection connection, IUnexpectedExceptionDiagnostics diagnostics)
         {
             if (connection is null)
             {
@@ -105,7 +105,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class AutoRecoveryResourceModel : IAutoRecoveryResource
+    public class AutoRecoveryModel : IAutoRecoveryResource
     {
         private readonly IUnexpectedExceptionDiagnostics _diagnostics;
 
@@ -113,12 +113,12 @@ namespace RabbitMqAsyncPublisher
 
         public ShutdownEventArgs CloseReason => Value.CloseReason;
 
-        public AutoRecoveryResourceModel(IModel model)
-            : this(model, AutoRecoveryDiagnostics.NoDiagnostics)
+        public AutoRecoveryModel(IModel model)
+            : this(model, AutoRecoveryEmptyDiagnostics.NoDiagnostics)
         {
         }
 
-        public AutoRecoveryResourceModel(IModel model, IUnexpectedExceptionDiagnostics diagnostics)
+        public AutoRecoveryModel(IModel model, IUnexpectedExceptionDiagnostics diagnostics)
         {
             if (model is null)
             {

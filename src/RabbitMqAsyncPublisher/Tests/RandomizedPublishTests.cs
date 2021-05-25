@@ -60,7 +60,7 @@ namespace Tests
                                 var body = Encoding.UTF8.GetBytes(messageTag);
                                 var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
 
-                                return publisher.PublishUnsafeAsync(
+                                return publisher.PublishAsync(
                                     "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
                             },
                             cancellationToken));
@@ -143,7 +143,7 @@ namespace Tests
                                     var messageTag = $"Message #{messageIndex}";
                                     var body = Encoding.UTF8.GetBytes(messageTag);
                                     var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
-                                    var unsafeTask = publisher.PublishUnsafeAsync(
+                                    var unsafeTask = publisher.PublishAsync(
                                         "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
                                     publishUnsafeTasks.Add(
                                         new PublishTask {Task = unsafeTask, MessageIndex = messageIndex, MessageTag = messageTag});
@@ -228,14 +228,13 @@ namespace Tests
             });
         }
 
-        private AsyncPublisherSyncDecorator<RetryingPublisherResult> CreatePublisher(
+        private IAsyncPublisher<RetryingPublisherResult> CreatePublisher(
             TestRabbitModel model, TestDiagnostics diagnostics,
             TimeSpan retryDelay)
         {
-            return new AsyncPublisherSyncDecorator<RetryingPublisherResult>(
-                new AsyncPublisherWithRetries(
-                    new QueueBasedAsyncPublisher(model),
-                    retryDelay, diagnostics));
+            return new AsyncPublisherWithRetries(
+                new AsyncPublisher(model),
+                retryDelay, diagnostics);
         }
 
         /// <summary>

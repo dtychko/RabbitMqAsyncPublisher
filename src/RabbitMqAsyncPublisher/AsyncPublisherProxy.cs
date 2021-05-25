@@ -17,14 +17,14 @@ namespace RabbitMqAsyncPublisher
                 Constants.ReplySuccess, "Proxy not initialized"));
         }
 
-        public async Task<TResult> PublishUnsafeAsync(
+        public async Task<TResult> PublishAsync(
             string exchange, string routingKey, ReadOnlyMemory<byte> body,
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
             try
             {
-                return await _implementation.PublishUnsafeAsync(exchange, routingKey, body, properties,
+                return await _implementation.PublishAsync(exchange, routingKey, body, properties,
                     cancellationToken).ConfigureAwait(false);
             }
             catch (ObjectDisposedException)

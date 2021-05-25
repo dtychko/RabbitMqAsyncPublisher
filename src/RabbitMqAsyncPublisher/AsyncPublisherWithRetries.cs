@@ -36,7 +36,7 @@ namespace RabbitMqAsyncPublisher
             _diagnostics = diagnostics;
         }
 
-        public async Task<RetryingPublisherResult> PublishUnsafeAsync(
+        public async Task<RetryingPublisherResult> PublishAsync(
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
@@ -139,7 +139,7 @@ namespace RabbitMqAsyncPublisher
             try
             {
                 var acknowledged = await _decorated
-                    .PublishUnsafeAsync(exchange, routingKey, body, properties, cancellationToken)
+                    .PublishAsync(exchange, routingKey, body, properties, cancellationToken)
                     .ConfigureAwait(false);
                 _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
                 return acknowledged;

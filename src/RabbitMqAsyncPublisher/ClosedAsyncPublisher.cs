@@ -15,7 +15,7 @@ namespace RabbitMqAsyncPublisher
             _closeReason = closeReason;
         }
 
-        public Task<TResult> PublishUnsafeAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+        public Task<TResult> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
