@@ -63,5 +63,7 @@ namespace RabbitMqAsyncPublisher
         {
             _onDispose();
         }
+
+        public static readonly IDisposable Empty = new Disposable(() => { });
     }
 }

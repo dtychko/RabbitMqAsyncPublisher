@@ -34,6 +34,10 @@
     </PropertyGroup>
     <ItemGroup>
         <Reference Include="mscorlib" />
+        <Reference Include="NSubstitute, Version=1.9.1.0, Culture=neutral, PublicKeyToken=92dd2e9066daa5ca">
+          <HintPath>..\packages\NSubstitute.1.9.1.0\lib\net45\NSubstitute.dll</HintPath>
+          <Private>True</Private>
+        </Reference>
         <Reference Include="RabbitMQ.Client, Version=6.0.0.0, Culture=neutral, PublicKeyToken=89e7d7c5feba84ce">
           <HintPath>..\packages\RabbitMQ.Client.6.2.1\lib\net461\RabbitMQ.Client.dll</HintPath>
           <Private>True</Private>
@@ -80,6 +84,8 @@
         </Reference>
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="AutoRecoveryTests.cs" />
+        <Compile Include="TestAutoRecoveryResource.cs" />
         <Compile Include="TestDiagnostics.cs" />
         <Compile Include="TestRabbitModel.cs" />
         <Compile Include="RandomizedPublishTests.cs" />

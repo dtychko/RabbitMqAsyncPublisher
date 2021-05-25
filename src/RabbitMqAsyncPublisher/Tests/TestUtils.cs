@@ -50,7 +50,27 @@ namespace Tests
                 }
             }
         }
-
+        
         public static string GetMessageTag(IBasicProperties properties) => ((TestBasicProperties) properties).TestTag;
+
+        public static bool WaitFor(
+            Func<bool> predicate,
+            TimeSpan? timeout = null,
+            TimeSpan? checkInterval = null)
+        {
+            var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(1));
+
+            while (!cts.IsCancellationRequested)
+            {
+                if (predicate())
+                {
+                    return true;
+                }
+
+                Thread.Sleep(checkInterval ?? TimeSpan.FromMilliseconds(33));
+            }
+
+            return false;
+        }
     }
 }
