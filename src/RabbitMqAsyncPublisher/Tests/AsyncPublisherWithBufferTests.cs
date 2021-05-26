@@ -1,13 +1,13 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using RabbitMQ.Client;
 using RabbitMqAsyncPublisher;
 using Shouldly;
+using static Tests.TestUtils;
 
 namespace Tests
 {
@@ -43,7 +43,7 @@ namespace Tests
             var tThrow = TestPublish(publisher);
             var tCancel = TestPublish(publisher);
 
-            await WaitFor(() => sources.Count == 4);
+            await SpinWaitFor(() => sources.Count == 4);
 
             await DequeueAndSetResultAsync(sources, true);
             await DequeueAndSetResultAsync(sources, false);
@@ -68,12 +68,11 @@ namespace Tests
             }))
             using (var publisher = CreateTarget(publisherMock))
             {
-                    
                 var t1 = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1000]));
                 var t2 = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1000]));
                 var t3 = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1000]));
 
-                await WaitFor(() => sources.Count == 3);
+                await SpinWaitFor(() => sources.Count == 3);
 
                 t1.IsCompleted.ShouldBeFalse();
                 t2.IsCompleted.ShouldBeFalse();
@@ -109,7 +108,7 @@ namespace Tests
             // Processing: 100, 200, 300 (count=3; bytes=600)
             // Waiting: 4000, 500, 600
             // Reached Limits: messages limit
-            await WaitFor(() => sources.Count == 3);
+            await SpinWaitFor(() => sources.Count == 3);
 
             // Processing: 100
             await DequeueAndSetResultAsync(sources, true);
@@ -118,7 +117,7 @@ namespace Tests
             // Processing: 200, 300, 4000 (count=3; bytes=4500)
             // Waiting: 500, 600
             // Reached Limits: messages limit, soft bytes limit
-            await WaitFor(() => sources.Count == 3);
+            await SpinWaitFor(() => sources.Count == 3);
 
             // Processing: 200
             await DequeueAndSetResultAsync(sources, true);
@@ -127,7 +126,7 @@ namespace Tests
             // Processing: 300, 4000 (count=2; bytes=4300)
             // Waiting: 500, 600
             // Reached Limits: soft bytes limit
-            await WaitFor(() => sources.Count == 2);
+            await SpinWaitFor(() => sources.Count == 2);
 
             // Processing: 300
             await DequeueAndSetResultAsync(sources, true);
@@ -136,7 +135,7 @@ namespace Tests
             // Processing: 4000 (count=1; bytes=4000)
             // Waiting: 500, 600
             // Reached Limits: soft bytes limit
-            await WaitFor(() => sources.Count == 1);
+            await SpinWaitFor(() => sources.Count == 1);
 
             // Processing: 4000
             await DequeueAndSetResultAsync(sources, true);
@@ -145,7 +144,7 @@ namespace Tests
             // Processing: 500, 600 (count=2; bytes=1100)
             // Waiting: -
             // Reached Limits: -
-            await WaitFor(() => sources.Count == 2);
+            await SpinWaitFor(() => sources.Count == 2);
 
             // Processing: 500, 600
             await DequeueAndSetResultAsync(sources, true);
@@ -162,41 +161,44 @@ namespace Tests
         [Test]
         public async Task ShouldCancel()
         {
-            var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
-            var publisherMock = new AsyncPublisherMock<bool>(() =>
+            await TestUtils.RunWithTimeout(async rootCancellationToken =>
             {
-                var tcs = new TaskCompletionSource<bool>();
-                sources.Enqueue(tcs);
-                return tcs.Task;
+                var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
+                var publisherMock = new AsyncPublisherMock<bool>(() =>
+                {
+                    var tcs = new TaskCompletionSource<bool>();
+                    sources.Enqueue(tcs);
+                    return tcs.Task;
+                });
+                var publisher = CreateTarget(publisherMock, 1);
+
+                var innerPublisherCancelled = TestPublish(publisher);
+
+                var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(rootCancellationToken);
+                var eventuallyCancelled = TestPublish(publisher, cancellationToken: cancellationTokenSource.Token);
+
+                eventuallyCancelled.IsCompleted.ShouldBeFalse();
+
+                cancellationTokenSource.Cancel();
+
+                await Task.WhenAny(eventuallyCancelled);
+                eventuallyCancelled.IsCompleted.ShouldBeTrue();
+                eventuallyCancelled.IsCanceled.ShouldBeTrue();
+
+                var immediatelyCancelled = publisher.PublishAsync(default, default, ReadOnlyMemory<byte>.Empty, default,
+                    cancellationTokenSource.Token);
+
+                immediatelyCancelled.IsCompleted.ShouldBeTrue();
+                immediatelyCancelled.IsCanceled.ShouldBeTrue();
+
+                await SpinWaitFor(() => sources.Count == 1);
+
+                await DequeueAndSetCanceledAsync(sources);
+
+                await Task.WhenAny(innerPublisherCancelled);
+                innerPublisherCancelled.IsCompleted.ShouldBeTrue();
+                innerPublisherCancelled.IsCanceled.ShouldBeTrue();
             });
-            var publisher = CreateTarget(publisherMock, 1);
-
-            var innerPublisherCancelled = TestPublish(publisher);
-
-            var cancellationTokenSource = new CancellationTokenSource();
-            var eventuallyCancelled = TestPublish(publisher, cancellationToken: cancellationTokenSource.Token);
-
-            eventuallyCancelled.IsCompleted.ShouldBeFalse();
-
-            cancellationTokenSource.Cancel();
-
-            await Task.WhenAny(eventuallyCancelled);
-            eventuallyCancelled.IsCompleted.ShouldBeTrue();
-            eventuallyCancelled.IsCanceled.ShouldBeTrue();
-
-            var immediatelyCancelled = publisher.PublishAsync(default, default, ReadOnlyMemory<byte>.Empty, default,
-                cancellationTokenSource.Token);
-
-            immediatelyCancelled.IsCompleted.ShouldBeTrue();
-            immediatelyCancelled.IsCanceled.ShouldBeTrue();
-
-            await WaitFor(() => sources.Count == 1);
-
-            await DequeueAndSetCanceledAsync(sources);
-
-            await Task.WhenAny(innerPublisherCancelled);
-            innerPublisherCancelled.IsCompleted.ShouldBeTrue();
-            innerPublisherCancelled.IsCanceled.ShouldBeTrue();
         }
 
 
@@ -212,9 +214,9 @@ namespace Tests
             });
             var publisher = CreateTarget(publisherMock, 1);
 
-            var eventuallyProcessed = TestPublish(publisher);
+            var eventuallyProcessed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1]));
 
-            var eventuallyDisposed = TestPublish(publisher);
+            var eventuallyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[2]));
             eventuallyDisposed.IsFaulted.ShouldBeFalse();
 
             publisher.Dispose();
@@ -223,11 +225,11 @@ namespace Tests
             eventuallyDisposed.IsFaulted.ShouldBeTrue();
             eventuallyDisposed.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
 
-            var immediatelyDisposed = TestPublish(publisher);
+            var immediatelyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[3]));
             immediatelyDisposed.IsFaulted.ShouldBeTrue();
             immediatelyDisposed.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
 
-            await WaitFor(() => sources.Count == 1);
+            await SpinWaitFor(() => sources.Count == 1);
             await DequeueAndSetResultAsync(sources, true);
 
             eventuallyProcessed.Result.ShouldBeTrue();
@@ -252,7 +254,7 @@ namespace Tests
                 ));
             }
 
-            var publisherMock = new AsyncPublisherMock<int>(exchange =>
+            using (var publisherMock = new AsyncPublisherMock<int>(exchange =>
             {
                 Console.WriteLine($" << {exchange}");
                 var tcs = new TaskCompletionSource<int>();
@@ -263,28 +265,32 @@ namespace Tests
                     tcs.SetResult(item.result);
                 });
                 return tcs.Task;
-            });
-            var publisher = CreateTarget(publisherMock, 10, 1000);
-
-            var tasks = new List<Task<int>>();
-            var expectedResults = new List<int>();
-
-            while (messages.TryDequeue(out var item))
+            }))
+            using (var publisher = CreateTarget(publisherMock, 10, 1000))
             {
-                Console.WriteLine($" {item.result.ToString()} ({item.body.Length}) >> [{Thread.CurrentThread.ManagedThreadId}]");
-                tasks.Add(publisher.PublishAsync(item.result.ToString(), string.Empty, item.body, default, default));
-                expectedResults.Add(item.result);
-            }
+                var tasks = new List<Task<int>>();
+                var expectedResults = new List<int>();
 
-            var actualResults = await Task.WhenAll(tasks);
-            for (var i = 0; i < actualResults.Length; i++)
-            {
-                if (actualResults[i] != expectedResults[i])
+                while (messages.TryDequeue(out var item))
                 {
-                    Console.WriteLine(i);
+                    Console.WriteLine(
+                        $" {item.result.ToString()} ({item.body.Length}) >> [{Thread.CurrentThread.ManagedThreadId}]");
+                    tasks.Add(publisher.PublishAsync(item.result.ToString(), string.Empty, item.body, default,
+                        default));
+                    expectedResults.Add(item.result);
                 }
 
-                actualResults[i].ShouldBe(expectedResults[i]);
+                var actualResults = await Task.WhenAll(tasks);
+
+                for (var i = 0; i < actualResults.Length; i++)
+                {
+                    if (actualResults[i] != expectedResults[i])
+                    {
+                        Console.WriteLine(i);
+                    }
+
+                    actualResults[i].ShouldBe(expectedResults[i]);
+                }
             }
         }
 
@@ -324,27 +330,6 @@ namespace Tests
             ReadOnlyMemory<byte> body = default, CancellationToken cancellationToken = default)
         {
             return publisher.PublishAsync(string.Empty, string.Empty, body, default, cancellationToken);
-        }
-
-        private static async Task WaitFor(Func<bool> condition)
-        {
-            using (var cancellationTokenSource = new CancellationTokenSource(Debugger.IsAttached ? 60_000 : 1000))
-            {
-                var cancellationToke = cancellationTokenSource.Token;
-                var winner = await Task.WhenAny(
-                    Task.Delay(-1, cancellationToke),
-                    Task.Run(() =>
-                    {
-                        var spinWait = new SpinWait();
-                        while (!condition())
-                        {
-                            cancellationToke.ThrowIfCancellationRequested();
-                            spinWait.SpinOnce();
-                        }
-                    }, cancellationToke)
-                );
-                await winner;
-            }
         }
 
         private static Task DequeueAndSetResultAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, T result)
@@ -389,7 +374,7 @@ namespace Tests
             var t1 = publisher.PublishAsync(default, default, default, default, default);
 
             // await WaitFor(() => sources.Count == 1);
-            
+
             sources.Dequeue().SetResult(true);
             t1.Result.ShouldBeTrue();
 
@@ -415,7 +400,8 @@ namespace Tests
     [TestFixture]
     public class AsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
     {
-        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated, int processingMessagesLimit = Int32.MaxValue,
+        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
+            int processingMessagesLimit = Int32.MaxValue,
             int processingBytesLimit = Int32.MaxValue)
         {
             return new AsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit, processingBytesLimit);
@@ -425,10 +411,23 @@ namespace Tests
     [TestFixture]
     public class ChannelBasedAsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
     {
-        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated, int processingMessagesLimit = Int32.MaxValue,
+        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
+            int processingMessagesLimit = Int32.MaxValue,
             int processingBytesLimit = Int32.MaxValue)
         {
             return new ChannelBasedAsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit,
+                processingBytesLimit);
+        }
+    }
+
+    [TestFixture]
+    public class QueueBasedAsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
+    {
+        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
+            int processingMessagesLimit = Int32.MaxValue,
+            int processingBytesLimit = Int32.MaxValue)
+        {
+            return new QueueBasedAsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit,
                 processingBytesLimit);
         }
     }

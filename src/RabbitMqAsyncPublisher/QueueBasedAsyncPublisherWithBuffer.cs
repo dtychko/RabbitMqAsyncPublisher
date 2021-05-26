@@ -1,12 +1,12 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
-    public class ChannelBasedAsyncPublisherWithBuffer<TResult> : IAsyncPublisher<TResult>
+    public class QueueBasedAsyncPublisherWithBuffer<TResult> : IAsyncPublisher<TResult>
     {
         private struct Job
         {
@@ -25,15 +25,12 @@ namespace RabbitMqAsyncPublisher
         private int _processingMessages;
         private int _processingBytes;
         private readonly object _currentStateSyncRoot = new object();
-
-        private readonly Channel<Job> _channel =
-            Channel.CreateUnbounded<Job>(new UnboundedChannelOptions
-                {SingleReader = true});
-
+        private readonly ConcurrentQueue<Job> _jobQueue = new ConcurrentQueue<Job>();
+        private readonly AsyncManualResetEvent _queueReadyEvent = new AsyncManualResetEvent(false);
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
         private readonly DisposeAwareCancellation _disposeCancellation = new DisposeAwareCancellation();
 
-        public ChannelBasedAsyncPublisherWithBuffer(
+        public QueueBasedAsyncPublisherWithBuffer(
             IAsyncPublisher<TResult> decorated,
             int processingMessagesLimit = int.MaxValue,
             int processingBytesSoftLimit = int.MaxValue)
@@ -52,22 +49,46 @@ namespace RabbitMqAsyncPublisher
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
 
+            // TODO: use Task.Run?
             RunReaderLoop(_disposeCancellation.Token);
         }
 
         private async void RunReaderLoop(CancellationToken cancellationToken)
         {
-            // TODO: async void error handling?
-            while (!_channel.Reader.Completion.IsCompleted && !cancellationToken.IsCancellationRequested)
+            // TODO: async void error handling
+            
+            await _queueReadyEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+            while (!cancellationToken.IsCancellationRequested)
             {
-                var job = await _channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-                await _gateEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
-                HandleNextJob(job);
+                _queueReadyEvent.Reset();
+                while (_jobQueue.TryDequeue(out var job))
+                {
+                    await _gateEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    HandleNextJob(job);
+                }
+
+                await _queueReadyEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 
         private void HandleNextJob(Job job)
         {
+            if (_disposeCancellation.IsCancellationRequested)
+            {
+                Task.Run(() =>
+                    job.TaskCompletionSource.SetException(
+                        new ObjectDisposedException(nameof(QueueBasedAsyncPublisherWithBuffer<TResult>))));
+                return;
+            }
+            
+            if (job.CancellationToken.IsCancellationRequested)
+            {
+                Task.Run(() => job.TaskCompletionSource.TrySetCanceled());
+                return;
+            }
+            
+            Console.WriteLine($" >> Starting next job {job.Body.Length}");
             Task<TResult> innerTask;
             try
             {
@@ -91,6 +112,7 @@ namespace RabbitMqAsyncPublisher
                 try
                 {
                     result = await innerTask;
+                    Console.WriteLine($" >> Job {job.Body.Length} finished");
                 }
                 catch (Exception ex)
                 {
@@ -106,28 +128,51 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
+        private void UpdateState(int deltaMessages, int deltaBytes)
+        {
+            lock (_currentStateSyncRoot)
+            {
+                _processingMessages += deltaMessages;
+                _processingBytes += deltaBytes;
+
+                if (_processingMessages < _processingMessagesLimit
+                    && _processingBytes < _processingBytesSoftLimit
+                    && !_disposeCancellation.IsCancellationRequested)
+                {
+                    Console.WriteLine(" >> Opening gate");
+                    _gateEvent.Set();
+                }
+                else
+                {
+                    Console.WriteLine(" >> Closing gate");
+                    _gateEvent.Reset();
+                }
+            }
+        }
+
         public async Task<TResult> PublishAsync(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
+            string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties,
             CancellationToken inputCancellationToken)
         {
             var (cancellationToken, cancellationDisposable) = _disposeCancellation.ResolveToken(
                 nameof(ChannelBasedAsyncPublisherWithBuffer<TResult>),
                 inputCancellationToken);
-            
+
             var completionSource = new TaskCompletionSource<TResult>();
+            
             var registration = cancellationToken.Register(() =>
             {
                 if (_disposeCancellation.IsCancellationRequested)
                 {
+                    Console.WriteLine($" >> Publisher disposed, setting exception on job {body.Length}");
+                            
                     completionSource.TrySetException(
                         new ObjectDisposedException(nameof(ChannelBasedAsyncPublisherWithBuffer<TResult>)));
                 }
                 else
                 {
-                    completionSource.TrySetCanceled();
+                    Console.WriteLine($" >> Publish task cancelled, cancelling nested task for job {body.Length}");
+                    completionSource.TrySetCanceled(cancellationToken);
                 }
             });
 
@@ -142,7 +187,6 @@ namespace RabbitMqAsyncPublisher
             };
 
             var resultTask = job.TaskCompletionSource.Task;
-            
 #pragma warning disable 4014
             resultTask.ContinueWith(_ =>
 #pragma warning restore 4014
@@ -152,28 +196,10 @@ namespace RabbitMqAsyncPublisher
                 registration.Dispose();
             });
 
-            await _channel.Writer.WriteAsync(job, cancellationToken).ConfigureAwait(false);
+            _jobQueue.Enqueue(job);
+            // TODO: do we need to await here?
+            await _queueReadyEvent.SetAsync().ConfigureAwait(false);
             return await resultTask.ConfigureAwait(false);
-        }
-
-        private void UpdateState(int deltaMessages, int deltaBytes)
-        {
-            lock (_currentStateSyncRoot)
-            {
-                _processingMessages += deltaMessages;
-                _processingBytes += deltaBytes;
-
-                if (_processingMessages < _processingMessagesLimit
-                    && _processingBytes < _processingBytesSoftLimit
-                    && !_disposeCancellation.IsCancellationRequested)
-                {
-                    _gateEvent.Set();
-                }
-                else
-                {
-                    _gateEvent.Reset();
-                }
-            }
         }
 
         public void Dispose()
@@ -188,8 +214,6 @@ namespace RabbitMqAsyncPublisher
                 _disposeCancellation.Cancel();
                 _disposeCancellation.Dispose();
             }
-
-            _channel.Writer.Complete();
         }
     }
 }

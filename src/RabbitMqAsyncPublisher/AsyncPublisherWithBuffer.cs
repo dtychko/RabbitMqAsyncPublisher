@@ -98,7 +98,8 @@ namespace RabbitMqAsyncPublisher
         private int _processingBytes;
 
         private readonly AsyncFifoSemaphore _semaphore = new AsyncFifoSemaphore(1, 1);
-        private readonly DisposeAwareCancellation _disposeCancellation = new DisposeAwareCancellation();
+        private readonly CancellationTokenSource _disposeCancellationTokenSource = new CancellationTokenSource();
+        private readonly CancellationToken _disposeCancellationToken;
 
         private readonly object _syncRoot = new object();
 
@@ -120,6 +121,8 @@ namespace RabbitMqAsyncPublisher
             _decorated = decorated;
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
+
+            _disposeCancellationToken = _disposeCancellationTokenSource.Token;
         }
 
         public async Task<TResult> PublishAsync(
@@ -129,16 +132,39 @@ namespace RabbitMqAsyncPublisher
             IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            await _disposeCancellation
-                .HandleAsync<object>(nameof(AsyncPublisherWithBuffer<TResult>), cancellationToken, async token =>
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                _disposeCancellationToken.ThrowIfCancellationRequested();
+
+                Console.WriteLine($" >> {exchange} << [{Thread.CurrentThread.ManagedThreadId}]");
+
+                if (cancellationToken.CanBeCanceled)
                 {
-                    Console.WriteLine($" >> {exchange} << [{Thread.CurrentThread.ManagedThreadId}]");
-                    // TODO: replace with another sync primitive that supports FIFO semantics
-                    await _semaphore.WaitAsync(token).ConfigureAwait(false);
-                    Console.WriteLine($" -- {exchange} --");
-                    return null;
-                })
-                .ConfigureAwait(false);
+                    using (var compositeCancellationTokenSource =
+                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCancellationToken))
+                    {
+                        // TODO: replace with another sync primitive that supports FIFO semantics
+                        await _semaphore.WaitAsync(compositeCancellationTokenSource.Token).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    await _semaphore.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
+                }
+
+                Console.WriteLine($" -- {exchange} --");
+            }
+            catch (OperationCanceledException ex)
+            {
+                if (ex.CancellationToken == _disposeCancellationToken)
+                {
+                    throw new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
+                }
+
+                throw;
+            }
 
             try
             {
@@ -163,7 +189,7 @@ namespace RabbitMqAsyncPublisher
                 if (_semaphore.CurrentCount == 0
                     && _processingMessages < _processingMessagesLimit
                     && _processingBytes < _processingBytesSoftLimit
-                    && !_disposeCancellation.IsCancellationRequested)
+                    && !_disposeCancellationToken.IsCancellationRequested)
                 {
                     Console.WriteLine("Release");
                     _semaphore.Release();
@@ -175,13 +201,13 @@ namespace RabbitMqAsyncPublisher
         {
             lock (_syncRoot)
             {
-                if (_disposeCancellation.IsCancellationRequested)
+                if (_disposeCancellationTokenSource.IsCancellationRequested)
                 {
                     return;
                 }
 
-                _disposeCancellation.Cancel();
-                _disposeCancellation.Dispose();
+                _disposeCancellationTokenSource.Cancel();
+                _disposeCancellationTokenSource.Dispose();
             }
 
             _semaphore.Dispose();

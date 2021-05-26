@@ -66,4 +66,39 @@ namespace RabbitMqAsyncPublisher
 
         public static readonly IDisposable Empty = new Disposable(() => { });
     }
+
+    public class CompositeDisposable : IDisposable
+    {
+        private readonly IReadOnlyList<IDisposable> _children;
+
+        public CompositeDisposable(IReadOnlyList<IDisposable> children)
+        {
+            _children = children;
+        }
+
+        public CompositeDisposable(params IDisposable[] childrenParams): this(children: childrenParams)
+        {
+        }
+        
+        public void Dispose()
+        {
+            var exceptions = new List<Exception>();
+            foreach (var child in _children)
+            {
+                try
+                {
+                    child.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    exceptions.Add(ex);
+                }
+            }
+
+            if (exceptions.Count > 0)
+            {
+                throw new AggregateException(exceptions);
+            }
+        }
+    }
 }

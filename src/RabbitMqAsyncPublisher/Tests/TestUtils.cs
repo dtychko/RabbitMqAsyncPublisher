@@ -34,7 +34,7 @@ namespace Tests
         {
             using (var cts = new CancellationTokenSource(Debugger.IsAttached
                 ? TimeSpan.FromMinutes(5)
-                : TimeSpan.FromSeconds(60)))
+                : TimeSpan.FromSeconds(10)))
             {
                 var testTask = test(cts.Token);
 
@@ -42,7 +42,7 @@ namespace Tests
                     Task.Delay(-1, cts.Token),
                     testTask);
 
-                cts.IsCancellationRequested.ShouldBeFalse();
+                cts.IsCancellationRequested.ShouldBeFalse($"{nameof(RunWithTimeout)} cancelled by a timeout");
 
                 if (resultTask == testTask)
                 {
@@ -71,6 +71,28 @@ namespace Tests
             }
 
             return false;
+        }
+        
+        public static async Task SpinWaitFor(Func<bool> condition)
+        {
+            using (var cancellationTokenSource = new CancellationTokenSource(Debugger.IsAttached ? 60_000 : 1000))
+            {
+                var cancellationToken = cancellationTokenSource.Token;
+                var winner = await Task.WhenAny(
+                    Task.Delay(-1, cancellationToken),
+                    Task.Run(() =>
+                    {
+                        var spinWait = new SpinWait();
+                        while (!condition())
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            spinWait.SpinOnce();
+                        }
+                    }, cancellationToken)
+                );
+                cancellationToken.IsCancellationRequested.ShouldBe(false, $"{nameof(SpinWaitFor)} cancelled by a timeout");
+                await winner;
+            }
         }
     }
 }

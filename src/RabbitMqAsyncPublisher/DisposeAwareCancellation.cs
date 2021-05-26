@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace RabbitMqAsyncPublisher
 {
@@ -21,40 +20,27 @@ namespace RabbitMqAsyncPublisher
 
         public void Cancel() => _disposeTokenSource.Cancel();
 
-        public async Task<TResult> HandleAsync<TResult>(
-            string componentName,
-            CancellationToken cancellationToken, Func<CancellationToken, Task<TResult>> action)
+        public (CancellationToken, IDisposable Cleanup) ResolveToken(string componentName, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            try
+            if (_disposeToken.IsCancellationRequested)
             {
-                _disposeToken.ThrowIfCancellationRequested();
-
-                if (cancellationToken.CanBeCanceled)
-                {
-                    using (var compositeCancellationTokenSource =
-                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeToken))
-                    {
-                        return await action(compositeCancellationTokenSource.Token).ConfigureAwait(false);
-                    }
-                }
-
-                return await action(_disposeToken).ConfigureAwait(false);
+                throw new ObjectDisposedException(componentName);
             }
-            catch (OperationCanceledException ex)
+
+            if (cancellationToken.CanBeCanceled)
             {
-                if (ex.CancellationToken == _disposeToken)
-                {
-                    throw new ObjectDisposedException(componentName);
-                }
-
-                throw;
+                var disposable = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeToken);
+                return (disposable.Token, disposable);
             }
+
+            return (_disposeToken, Disposable.Empty);
         }
 
         public void Dispose()
         {
+            Console.WriteLine($" >> {nameof(DisposeAwareCancellation)}.{nameof(Dispose)}");
             _disposeTokenSource.Dispose();
         }
     }
