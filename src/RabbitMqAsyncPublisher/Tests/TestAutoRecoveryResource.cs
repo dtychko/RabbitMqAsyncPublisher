@@ -16,7 +16,7 @@ namespace Tests
 
         public void FireShutdown()
         {
-            var args = new ShutdownEventArgs(ShutdownInitiator.Application, Constants.ReplySuccess, "Test");
+            var args = new ShutdownEventArgs(ShutdownInitiator.Application, 200, "Test");
             CloseReason = args;
             Shutdown?.Invoke(this, args);
         }

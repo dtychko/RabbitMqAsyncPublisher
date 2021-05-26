@@ -19,7 +19,7 @@ namespace RabbitMqAsyncPublisher
         public AsyncPublisherProxy()
         {
             _implementation = new ClosedAsyncPublisher<TResult>(new ShutdownEventArgs(ShutdownInitiator.Application,
-                Constants.ReplySuccess, "Proxy not initialized"));
+                200, "Proxy not initialized"));
         }
 
         public async Task<TResult> PublishAsync(
@@ -38,7 +38,7 @@ namespace RabbitMqAsyncPublisher
                 // so we should adapt such exception to AlreadyClosed,
                 // which is expected to be thrown in such cases when publisher can't complete publish.
                 throw new AlreadyClosedException(new ShutdownEventArgs(ShutdownInitiator.Application,
-                    Constants.ReplySuccess, "Publisher implementation disposed"));
+                    200, "Publisher implementation disposed"));
             }
         }
 
@@ -55,7 +55,7 @@ namespace RabbitMqAsyncPublisher
             lock (_syncRoot)
             {
                 _implementation = new ClosedAsyncPublisher<TResult>(new ShutdownEventArgs(ShutdownInitiator.Application,
-                    Constants.ReplySuccess, "Proxy reset"));
+                    200, "Proxy reset"));
             }
         }
 
