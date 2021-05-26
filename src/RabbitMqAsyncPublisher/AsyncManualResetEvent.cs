@@ -30,6 +30,7 @@ namespace RabbitMqAsyncPublisher
                 capturedSource.Task
             ).ConfigureAwait(false);
 
+            await result;
             return result == capturedSource.Task;
         }
 

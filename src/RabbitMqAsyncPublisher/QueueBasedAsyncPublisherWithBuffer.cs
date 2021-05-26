@@ -29,6 +29,7 @@ namespace RabbitMqAsyncPublisher
         private readonly AsyncManualResetEvent _queueReadyEvent = new AsyncManualResetEvent(false);
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
         private readonly DisposeAwareCancellation _disposeCancellation = new DisposeAwareCancellation();
+        private readonly Task _readLoopTask;
 
         public QueueBasedAsyncPublisherWithBuffer(
             IAsyncPublisher<TResult> decorated,
@@ -49,8 +50,7 @@ namespace RabbitMqAsyncPublisher
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
 
-            // TODO: use Task.Run?
-            RunReaderLoop(_disposeCancellation.Token);
+            _readLoopTask = Task.Run(() => RunReaderLoop(_disposeCancellation.Token));
         }
 
         private async void RunReaderLoop(CancellationToken cancellationToken)
@@ -64,7 +64,20 @@ namespace RabbitMqAsyncPublisher
                 _queueReadyEvent.Reset();
                 while (_jobQueue.TryDequeue(out var job))
                 {
-                    await _gateEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    using (var combinedSource =
+                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, job.CancellationToken))
+                    {
+                        try
+                        {
+                            await _gateEvent.WaitAsync(combinedSource.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (job.CancellationToken.IsCancellationRequested)
+                        {
+                            Task.Run(() => job.TaskCompletionSource.TrySetCanceled(job.CancellationToken));
+                            continue;
+                        }
+                    }
+
                     HandleNextJob(job);
                 }
 
@@ -152,31 +165,8 @@ namespace RabbitMqAsyncPublisher
 
         public async Task<TResult> PublishAsync(
             string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties,
-            CancellationToken inputCancellationToken)
+            CancellationToken cancellationToken)
         {
-            var (cancellationToken, cancellationDisposable) = _disposeCancellation.ResolveToken(
-                nameof(ChannelBasedAsyncPublisherWithBuffer<TResult>),
-                inputCancellationToken);
-
-            var completionSource = new TaskCompletionSource<TResult>();
-
-            // TODO: registration is executed synchronously when token is disposed, which executes task continuation synchronously as well
-            var registration = cancellationToken.Register(() =>
-            {
-                if (_disposeCancellation.IsCancellationRequested)
-                {
-                    Console.WriteLine($" >> Publisher disposed, setting exception on job {body.Length}");
-
-                    completionSource.TrySetException(
-                        new ObjectDisposedException(nameof(ChannelBasedAsyncPublisherWithBuffer<TResult>)));
-                }
-                else
-                {
-                    Console.WriteLine($" >> Publish task cancelled, cancelling nested task for job {body.Length}");
-                    completionSource.TrySetCanceled(cancellationToken);
-                }
-            });
-
             var job = new Job
             {
                 Exchange = exchange,
@@ -184,23 +174,13 @@ namespace RabbitMqAsyncPublisher
                 Body = body,
                 Properties = properties,
                 CancellationToken = cancellationToken,
-                TaskCompletionSource = completionSource
+                TaskCompletionSource = new TaskCompletionSource<TResult>()
             };
-
-            var resultTask = job.TaskCompletionSource.Task;
-#pragma warning disable 4014
-            resultTask.ContinueWith(_ =>
-#pragma warning restore 4014
-            {
-                // TODO: custom error handling?
-                cancellationDisposable.Dispose();
-                registration.Dispose();
-            });
 
             _jobQueue.Enqueue(job);
             // TODO: do we need to await here?
             await _queueReadyEvent.SetAsync().ConfigureAwait(false);
-            return await resultTask.ConfigureAwait(false);
+            return await job.TaskCompletionSource.Task.ConfigureAwait(false);
         }
 
         public void Dispose()
@@ -217,6 +197,15 @@ namespace RabbitMqAsyncPublisher
             }
 
             _decorated.Dispose();
+
+            _readLoopTask.Wait();
+
+            while (_jobQueue.TryDequeue(out var job))
+            {
+                Task.Run(() =>
+                    job.TaskCompletionSource.TrySetException(
+                        new ObjectDisposedException(nameof(QueueBasedAsyncPublisherWithBuffer<TResult>))));
+            }
         }
     }
 }

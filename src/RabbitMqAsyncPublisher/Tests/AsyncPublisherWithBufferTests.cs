@@ -373,18 +373,6 @@ namespace Tests
     }
 
     [TestFixture]
-    public class ChannelBasedAsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
-    {
-        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
-            int processingMessagesLimit = Int32.MaxValue,
-            int processingBytesLimit = Int32.MaxValue)
-        {
-            return new ChannelBasedAsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit,
-                processingBytesLimit);
-        }
-    }
-
-    [TestFixture]
     public class QueueBasedAsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
     {
         protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
