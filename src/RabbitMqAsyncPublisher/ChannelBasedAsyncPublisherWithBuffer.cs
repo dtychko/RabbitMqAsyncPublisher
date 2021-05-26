@@ -118,6 +118,8 @@ namespace RabbitMqAsyncPublisher
                 inputCancellationToken);
             
             var completionSource = new TaskCompletionSource<TResult>();
+            
+            // TODO: registration is executed synchronously when token is disposed, which executes task continuation synchronously as well
             var registration = cancellationToken.Register(() =>
             {
                 if (_disposeCancellation.IsCancellationRequested)
@@ -190,6 +192,7 @@ namespace RabbitMqAsyncPublisher
             }
 
             _channel.Writer.Complete();
+            _decorated.Dispose();
         }
     }
 }

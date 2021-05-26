@@ -56,7 +56,7 @@ namespace RabbitMqAsyncPublisher
         private async void RunReaderLoop(CancellationToken cancellationToken)
         {
             // TODO: async void error handling
-            
+
             await _queueReadyEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             while (!cancellationToken.IsCancellationRequested)
@@ -81,13 +81,13 @@ namespace RabbitMqAsyncPublisher
                         new ObjectDisposedException(nameof(QueueBasedAsyncPublisherWithBuffer<TResult>))));
                 return;
             }
-            
+
             if (job.CancellationToken.IsCancellationRequested)
             {
                 Task.Run(() => job.TaskCompletionSource.TrySetCanceled());
                 return;
             }
-            
+
             Console.WriteLine($" >> Starting next job {job.Body.Length}");
             Task<TResult> innerTask;
             try
@@ -159,13 +159,14 @@ namespace RabbitMqAsyncPublisher
                 inputCancellationToken);
 
             var completionSource = new TaskCompletionSource<TResult>();
-            
+
+            // TODO: registration is executed synchronously when token is disposed, which executes task continuation synchronously as well
             var registration = cancellationToken.Register(() =>
             {
                 if (_disposeCancellation.IsCancellationRequested)
                 {
                     Console.WriteLine($" >> Publisher disposed, setting exception on job {body.Length}");
-                            
+
                     completionSource.TrySetException(
                         new ObjectDisposedException(nameof(ChannelBasedAsyncPublisherWithBuffer<TResult>)));
                 }
@@ -214,6 +215,8 @@ namespace RabbitMqAsyncPublisher
                 _disposeCancellation.Cancel();
                 _disposeCancellation.Dispose();
             }
+
+            _decorated.Dispose();
         }
     }
 }

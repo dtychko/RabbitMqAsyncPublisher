@@ -215,6 +215,7 @@ namespace Tests
             var publisher = CreateTarget(publisherMock, 1);
 
             var eventuallyProcessed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1]));
+            await SpinWaitFor(() => sources.Count == 1);
 
             var eventuallyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[2]));
             eventuallyDisposed.IsFaulted.ShouldBeFalse();
@@ -229,9 +230,9 @@ namespace Tests
             immediatelyDisposed.IsFaulted.ShouldBeTrue();
             immediatelyDisposed.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
 
-            await SpinWaitFor(() => sources.Count == 1);
             await DequeueAndSetResultAsync(sources, true);
 
+            eventuallyProcessed.IsFaulted.ShouldBeFalse();
             eventuallyProcessed.Result.ShouldBeTrue();
         }
 
@@ -357,43 +358,6 @@ namespace Tests
                 queue.TryDequeue(out var item);
                 item.SetCanceled();
             });
-        }
-
-        [Test]
-        public async Task Foo()
-        {
-            var sources = new Queue<TaskCompletionSource<bool>>();
-            var publisherMock = new AsyncPublisherMock<bool>(() =>
-            {
-                var tcs = new TaskCompletionSource<bool>();
-                sources.Enqueue(tcs);
-                return tcs.Task;
-            });
-            var publisher = CreateTarget(publisherMock, 1);
-
-            var t1 = publisher.PublishAsync(default, default, default, default, default);
-
-            // await WaitFor(() => sources.Count == 1);
-
-            sources.Dequeue().SetResult(true);
-            t1.Result.ShouldBeTrue();
-
-            var t2 = publisher.PublishAsync(default, default, default, default, default);
-            var t3 = publisher.PublishAsync(default, default, default, default, default);
-
-            publisher.Dispose();
-
-            t3.ContinueWith(_ => { }).Wait();
-            t3.IsFaulted.ShouldBeTrue();
-            t3.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
-
-            var t4 = publisher.PublishAsync(default, default, default, default, default);
-            t4.ContinueWith(_ => { }).Wait();
-            t4.IsFaulted.ShouldBeTrue();
-            t4.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
-
-            sources.Dequeue().SetResult(true);
-            t2.Result.ShouldBeTrue();
         }
     }
 
