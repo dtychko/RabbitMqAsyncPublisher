@@ -28,7 +28,7 @@ namespace RabbitMqAsyncPublisher
                 retryDelay,
                 diagnostics
             );
-            
+
             autoRecovery.Start();
             return autoRecovery;
         }
@@ -69,7 +69,7 @@ namespace RabbitMqAsyncPublisher
     public class AutoRecovery<TResource> : IDisposable where TResource : class, IAutoRecoveryResource
     {
         private readonly Func<TResource> _createResource;
-        
+
         /// <summary>
         /// Describes dependencies which must be created or recreated when resource instance becomes available.
         /// For example, publishers depending on RabbitMQ model.
@@ -78,7 +78,7 @@ namespace RabbitMqAsyncPublisher
 
         private readonly Func<int, CancellationToken, Task> _reconnectDelay;
         private readonly IAutoRecoveryDiagnostics _diagnostics;
-        
+
         /// <summary>
         /// Resource lifecycle handlers must be synchronized.
         /// SemaphoreSlim provides a convenient async API for exclusive access. 

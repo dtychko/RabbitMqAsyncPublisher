@@ -229,7 +229,7 @@ namespace Tests
         [Ignore(
             "Publishing order is broken. SemaphoreSlim should be replaced with another sync primitive that support FIFO semantics.")]
         [Test]
-        [TestCase(100, 123)]
+        [TestCase(1000, 123)]
         public async Task RandomTest(int messageCount, int seed)
         {
             var random = new Random(seed);
@@ -266,7 +266,7 @@ namespace Tests
 
             while (messages.TryDequeue(out var item))
             {
-                Console.WriteLine($" {item.result.ToString()} ({item.body.Length}) >>");
+                Console.WriteLine($" {item.result.ToString()} ({item.body.Length}) >> [{Thread.CurrentThread.ManagedThreadId}]");
                 tasks.Add(publisher.PublishAsync(item.result.ToString(), string.Empty, item.body, default, default));
                 expectedResults.Add(item.result);
             }
