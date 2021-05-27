@@ -34,7 +34,7 @@ namespace Tests
         public void BasicPublish(string exchange, string routingKey, bool mandatory, IBasicProperties basicProperties,
             ReadOnlyMemory<byte> body)
         {
-            Console.WriteLine("test-model/basic-publish/starting");
+            // Console.WriteLine("test-model/basic-publish/starting");
 
             PublishRequest request;
             lock (_gate)

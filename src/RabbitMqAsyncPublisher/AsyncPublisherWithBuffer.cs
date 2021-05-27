@@ -16,7 +16,7 @@ namespace RabbitMqAsyncPublisher
 
         private readonly Task _readerLoopTask;
 
-        private readonly JobQueue _jobQueue = new JobQueue();
+        private readonly JobQueue<Job> _jobQueue = new JobQueue<Job>();
         private readonly AsyncManualResetEvent _jobQueueReadyEvent = new AsyncManualResetEvent(false);
 
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
@@ -299,70 +299,70 @@ namespace RabbitMqAsyncPublisher
                 Stopwatch = stopwatch;
             }
         }
+    }
+    
+    internal class JobQueue<TJob>
+    {
+        private readonly LinkedList<TJob> _queue = new LinkedList<TJob>();
+        private volatile int _size;
 
-        private class JobQueue
+        public int Size => _size;
+
+        public Func<bool> Enqueue(TJob job)
         {
-            private readonly LinkedList<Job> _queue = new LinkedList<Job>();
-            private volatile int _size;
+            LinkedListNode<TJob> queueNode;
 
-            public int Size => _size;
+            Interlocked.Increment(ref _size);
 
-            public Func<bool> Enqueue(Job job)
+            lock (_queue)
             {
-                LinkedListNode<Job> queueNode;
-
-                Interlocked.Increment(ref _size);
-
-                lock (_queue)
-                {
-                    queueNode = _queue.AddLast(job);
-                }
-
-                return () => TryRemoveJob(queueNode);
+                queueNode = _queue.AddLast(job);
             }
 
-            private bool TryRemoveJob(LinkedListNode<Job> jobNode)
-            {
-                lock (_queue)
-                {
-                    if (jobNode.List is null)
-                    {
-                        return false;
-                    }
+            return () => TryRemoveJob(queueNode);
+        }
 
-                    _queue.Remove(jobNode);
+        private bool TryRemoveJob(LinkedListNode<TJob> jobNode)
+        {
+            lock (_queue)
+            {
+                if (jobNode.List is null)
+                {
+                    return false;
                 }
 
-                Interlocked.Decrement(ref _size);
-                return true;
+                _queue.Remove(jobNode);
             }
 
-            public bool CanDequeueJob()
+            Interlocked.Decrement(ref _size);
+            return true;
+        }
+
+        public bool CanDequeueJob()
+        {
+            lock (_queue)
             {
-                lock (_queue)
-                {
-                    return _queue.Count > 0;
-                }
+                return _queue.Count > 0;
             }
+        }
 
-            public Job DequeueJob()
+        public TJob DequeueJob()
+        {
+            TJob job;
+
+            lock (_queue)
             {
-                Job job;
-
-                lock (_queue)
+                if (_queue.Count == 0)
                 {
-                    if (_queue.Count == 0)
-                    {
-                        throw new InvalidOperationException("Job queue is empty.");
-                    }
-
-                    job = _queue.First.Value;
-                    _queue.RemoveFirst();
+                    throw new InvalidOperationException("Job queue is empty.");
                 }
 
-                Interlocked.Decrement(ref _size);
-                return job;
+                job = _queue.First.Value;
+                _queue.RemoveFirst();
             }
+
+            Interlocked.Decrement(ref _size);
+            return job;
         }
     }
 }

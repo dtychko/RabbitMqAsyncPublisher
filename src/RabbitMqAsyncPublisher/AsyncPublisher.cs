@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -12,29 +11,106 @@ namespace RabbitMqAsyncPublisher
 {
     using static DiagnosticsUtils;
 
+    internal class JobQueueLoop<TJob>
+    {
+        private readonly Action<Func<TJob>, Func<bool>> _handleJob;
+        private readonly IUnexpectedExceptionDiagnostics _diagnostics;
+
+        private readonly JobQueue<TJob> _jobQueue = new JobQueue<TJob>();
+        private readonly AsyncManualResetEvent _jobQueueReadyEvent = new AsyncManualResetEvent(false);
+        private readonly Task _jobQueueTask;
+
+        private readonly CancellationTokenSource _stopCancellation = new CancellationTokenSource();
+        private readonly CancellationToken _stopCancellationToken;
+
+        public int QueueSize => _jobQueue.Size;
+
+        public JobQueueLoop(Action<Func<TJob>, Func<bool>> handleJob,
+            IUnexpectedExceptionDiagnostics diagnostics)
+        {
+            _handleJob = handleJob;
+            _diagnostics = diagnostics;
+
+            _stopCancellationToken = _stopCancellation.Token;
+
+            _jobQueueTask = Task.Run(StartLoop);
+        }
+
+        public Func<bool> Enqueue(TJob job)
+        {
+            if (_stopCancellationToken.IsCancellationRequested)
+            {
+                throw new ObjectDisposedException(nameof(JobQueueLoop<TJob>));
+            }
+
+            var tryRemove = _jobQueue.Enqueue(job);
+            _jobQueueReadyEvent.Set();
+            return tryRemove;
+        }
+
+        private async void StartLoop()
+        {
+            try
+            {
+                await _jobQueueReadyEvent.WaitAsync(_stopCancellationToken).ConfigureAwait(false);
+
+                while (!_stopCancellationToken.IsCancellationRequested)
+                {
+                    _jobQueueReadyEvent.Reset();
+
+                    while (_jobQueue.CanDequeueJob())
+                    {
+                        _handleJob(() => _jobQueue.DequeueJob(), () => _stopCancellationToken.IsCancellationRequested);
+                    }
+
+                    await _jobQueueReadyEvent.WaitAsync(_stopCancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (_stopCancellationToken.IsCancellationRequested)
+            {
+                // Job loop gracefully stopped
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"Unexpected exception in job queue loop '{GetType().Name}': jobQueueSize={_jobQueue.Size}",
+                    ex);
+
+                // TODO: ? Move publisher to state when it throws on each attempt to publish a message
+                // TODO: ? Restart the loop after some delay
+            }
+        }
+
+        public Task Stop()
+        {
+            lock (_stopCancellation)
+            {
+                if (!_stopCancellation.IsCancellationRequested)
+                {
+                    _stopCancellation.Cancel();
+                    _stopCancellation.Dispose();
+                }
+            }
+
+            return _jobQueueTask;
+        }
+    }
+
     public class AsyncPublisher : IAsyncPublisher<bool>
     {
         private readonly IModel _model;
         private readonly IAsyncPublisherDiagnostics _diagnostics;
 
-        private readonly Task _publishLoop;
-        private readonly Task _ackLoop;
-
-        private readonly ConcurrentQueue<PublishQueueItem> _publishQueue = new ConcurrentQueue<PublishQueueItem>();
-        private volatile int _publishQueueSize;
-
-        private readonly ConcurrentQueue<AckJob> _ackQueue = new ConcurrentQueue<AckJob>();
-        private volatile int _ackQueueSize;
+        private readonly JobQueueLoop<PublishQueueItem> _publishLoop;
+        private readonly JobQueueLoop<AckJob> _ackLoop;
 
         private readonly AsyncPublisherTaskCompletionSourceRegistry _completionSourceRegistry =
             new AsyncPublisherTaskCompletionSourceRegistry();
 
         private int _completionSourceRegistrySize;
 
-        private readonly AsyncManualResetEvent _publishEvent = new AsyncManualResetEvent(false);
-        private readonly AsyncManualResetEvent _ackJobQueueReadyEvent = new AsyncManualResetEvent(false);
-
-        private volatile int _isDisposed;
+        private readonly CancellationTokenSource _disposeCancellationSource = new CancellationTokenSource();
+        private readonly CancellationToken _disposeCancellationToken;
 
         public AsyncPublisher(IModel model, IAsyncPublisherDiagnostics diagnostics = null)
         {
@@ -54,250 +130,198 @@ namespace RabbitMqAsyncPublisher
             _model = model;
             _diagnostics = diagnostics ?? AsyncPublisherEmptyDiagnostics.NoDiagnostics;
 
+            _disposeCancellationToken = _disposeCancellationSource.Token;
+
+            _publishLoop = new JobQueueLoop<PublishQueueItem>(HandlePublishJob, _diagnostics);
+            _ackLoop = new JobQueueLoop<AckJob>(HandleAckJob, _diagnostics);
+
             _model.BasicAcks += OnBasicAcks;
             _model.BasicNacks += OnBasicNacks;
-
-            _publishLoop = Task.Run(StartPublishLoop);
-            _ackLoop = Task.Run(StartAckLoop);
         }
 
         private void OnBasicAcks(object sender, BasicAckEventArgs e)
         {
-            EnqueueAck(new AckJob(e.DeliveryTag, e.Multiple, true));
+            _ackLoop.Enqueue(new AckJob(e.DeliveryTag, e.Multiple, true));
             TrackSafe(_diagnostics.TrackAckJobEnqueued,
                 new AckArgs(e.DeliveryTag, e.Multiple, true),
-                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _ackJobQueueReadyEvent.Set();
+                CreateStatus());
         }
 
         private void OnBasicNacks(object sender, BasicNackEventArgs e)
         {
-            EnqueueAck(new AckJob(e.DeliveryTag, e.Multiple, false));
+            _ackLoop.Enqueue(new AckJob(e.DeliveryTag, e.Multiple, false));
             TrackSafe(_diagnostics.TrackAckJobEnqueued,
                 new AckArgs(e.DeliveryTag, e.Multiple, false),
-                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _ackJobQueueReadyEvent.Set();
+                CreateStatus());
         }
 
-        private async void StartPublishLoop()
+        private void HandlePublishJob(Func<PublishQueueItem> dequeuePublishQueueItem, Func<bool> isStopped)
         {
+            if (isStopped())
+            {
+                return;
+            }
+
+            var publishQueueItem = dequeuePublishQueueItem();
+            var cancellationToken = publishQueueItem.CancellationToken;
+            var taskCompletionSource = publishQueueItem.TaskCompletionSource;
+            ulong seqNo;
+
             try
             {
-                await _publishEvent.WaitAsync().ConfigureAwait(false);
-                TrackStatusSafe();
-
-                while (_isDisposed == 0 || _publishQueueSize > 0)
+                if (cancellationToken.IsCancellationRequested)
                 {
-                    _publishEvent.Reset();
-                    RunPublishInnerLoop();
-                    await _publishEvent.WaitAsync().ConfigureAwait(false);
-                    TrackStatusSafe();
+                    Task.Run(() => taskCompletionSource.TrySetCanceled());
+                    return;
                 }
-            }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackUnexpectedException,
-                    "Unexpected publish loop exception: " +
-                    $"publishQueueSize={_publishQueueSize}; ackQueueSize={_ackQueueSize}; completionSourceRegistrySize={_completionSourceRegistrySize}",
-                    ex);
 
-                // TODO: ? Move publisher to state when it throws on each attempt to publish a message
-                // TODO: ? Restart the loop after some delay
-            }
-        }
-
-        private async void StartAckLoop()
-        {
-            try
-            {
-                await _ackJobQueueReadyEvent.WaitAsync().ConfigureAwait(false);
-                TrackStatusSafe();
-
-                while (_isDisposed == 0 || _ackQueueSize > 0)
+                if (_disposeCancellationToken.IsCancellationRequested)
                 {
-                    _ackJobQueueReadyEvent.Reset();
-                    RunAckInnerLoop();
-                    await _ackJobQueueReadyEvent.WaitAsync().ConfigureAwait(false);
-                    TrackStatusSafe();
+                    Task.Run(() =>
+                        taskCompletionSource.TrySetException(
+                            new ObjectDisposedException(nameof(AsyncPublisher))));
+                    return;
                 }
-            }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackUnexpectedException,
-                    "Unexpected ack loop exception: " +
-                    $"publishQueueSize={_publishQueueSize}; ackQueueSize={_ackQueueSize}; completionSourceRegistrySize={_completionSourceRegistrySize}",
-                    ex);
 
-                // TODO: ? Move publisher to state when it throws on each attempt to publish a message
-                // TODO: ? Restart the loop after some delay
-            }
-        }
-
-        private void TrackStatusSafe()
-        {
-            TrackSafe(_diagnostics.TrackStatus,
-                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize,
-                    _completionSourceRegistrySize));
-        }
-
-        private void RunPublishInnerLoop()
-        {
-            while (TryDequeuePublish(out var publishQueueItem))
-            {
-                var cancellationToken = publishQueueItem.CancellationToken;
-                var taskCompletionSource = publishQueueItem.TaskCompletionSource;
-                ulong seqNo;
-
-                try
+                if (IsModelClosed(out var shutdownEventArgs))
                 {
-                    if (cancellationToken.IsCancellationRequested)
+                    Task.Run(() =>
+                        taskCompletionSource.TrySetException(new AlreadyClosedException(shutdownEventArgs)));
+                    return;
+                }
+
+                if (cancellationToken.CanBeCanceled)
+                {
+                    var registration = cancellationToken.Register(() =>
                     {
                         Task.Run(() => taskCompletionSource.TrySetCanceled());
-                        continue;
-                    }
-
-                    if (_isDisposed == 1)
-                    {
-                        Task.Run(() =>
-                            taskCompletionSource.TrySetException(
-                                new ObjectDisposedException(nameof(AsyncPublisher))));
-                        continue;
-                    }
-
-                    if (IsModelClosed(out var shutdownEventArgs))
-                    {
-                        Task.Run(() =>
-                            taskCompletionSource.TrySetException(new AlreadyClosedException(shutdownEventArgs)));
-                        continue;
-                    }
-
-                    if (cancellationToken.CanBeCanceled)
-                    {
-                        var registration = cancellationToken.Register(() =>
-                        {
-                            Task.Run(() => taskCompletionSource.TrySetCanceled());
-                        });
-                        taskCompletionSource.Task.ContinueWith(_ => { registration.Dispose(); });
-                    }
-
-                    seqNo = _model.NextPublishSeqNo;
-                }
-                catch (Exception ex)
-                {
-                    TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to start message publishing.", ex);
-                    Task.Run(() => taskCompletionSource.TrySetException(ex));
-                    continue;
+                    });
+                    taskCompletionSource.Task.ContinueWith(_ => { registration.Dispose(); });
                 }
 
-                var publishArgs = new PublishArgs(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
-                    publishQueueItem.Body, publishQueueItem.Properties);
-                TrackSafe(_diagnostics.TrackPublishStarted, publishArgs, seqNo);
-                var stopwatch = Stopwatch.StartNew();
-
-                try
-                {
-                    RegisterTaskCompletionSource(seqNo, taskCompletionSource);
-                    _model.BasicPublish(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
-                        publishQueueItem.Properties, publishQueueItem.Body);
-                }
-                catch (Exception ex)
-                {
-                    TrackSafe(_diagnostics.TrackPublishFailed, publishArgs, seqNo, stopwatch.Elapsed, ex);
-                    TryRemoveSingleTaskCompletionSource(seqNo, out _);
-                    Task.Run(() => taskCompletionSource.TrySetException(ex));
-                    continue;
-                }
-
-                TrackSafe(_diagnostics.TrackPublishSucceeded, publishArgs, seqNo, stopwatch.Elapsed);
+                seqNo = _model.NextPublishSeqNo;
             }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to start message publishing.", ex);
+                Task.Run(() => taskCompletionSource.TrySetException(ex));
+                return;
+            }
+
+            var publishArgs = new PublishArgs(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
+                publishQueueItem.Body, publishQueueItem.Properties);
+            TrackSafe(_diagnostics.TrackPublishStarted, publishArgs, seqNo);
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                RegisterTaskCompletionSource(seqNo, taskCompletionSource);
+                _model.BasicPublish(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
+                    publishQueueItem.Properties, publishQueueItem.Body);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackPublishFailed, publishArgs, seqNo, stopwatch.Elapsed, ex);
+                TryRemoveSingleTaskCompletionSource(seqNo, out _);
+                Task.Run(() => taskCompletionSource.TrySetException(ex));
+                return;
+            }
+
+            TrackSafe(_diagnostics.TrackPublishSucceeded, publishArgs, seqNo, stopwatch.Elapsed);
         }
 
-        private void RunAckInnerLoop()
+        private void HandleAckJob(Func<AckJob> dequeueAckQueueItem, Func<bool> isStopped)
         {
-            while (TryDequeueAck(out var ackQueueItem))
+            var ackQueueItem = dequeueAckQueueItem();
+            var deliveryTag = ackQueueItem.DeliveryTag;
+            var multiple = ackQueueItem.Multiple;
+            var ack = ackQueueItem.Ack;
+
+            var ackArgs = new AckArgs(deliveryTag, multiple, ack);
+            TrackSafe(_diagnostics.TrackAckStarted, ackArgs);
+            var stopwatch = Stopwatch.StartNew();
+
+            try
             {
-                var deliveryTag = ackQueueItem.DeliveryTag;
-                var multiple = ackQueueItem.Multiple;
-                var ack = ackQueueItem.Ack;
-
-                var ackArgs = new AckArgs(deliveryTag, multiple, ack);
-                TrackSafe(_diagnostics.TrackAckStarted, ackArgs);
-                var stopwatch = Stopwatch.StartNew();
-
-                try
+                if (!multiple)
                 {
-                    if (!multiple)
+                    if (TryRemoveSingleTaskCompletionSource(deliveryTag, out var source))
                     {
-                        if (TryRemoveSingleTaskCompletionSource(deliveryTag, out var source))
-                        {
-                            Task.Run(() => source.TrySetResult(ack));
-                        }
-                    }
-                    else
-                    {
-                        foreach (var source in RemoveAllTaskCompletionSourcesUpTo(deliveryTag))
-                        {
-                            Task.Run(() => source.TrySetResult(ack));
-                        }
+                        Task.Run(() => source.TrySetResult(ack));
                     }
                 }
-                catch (Exception ex)
+                else
                 {
-                    TrackSafe(_diagnostics.TrackUnexpectedException,
-                        $"Unable to process ack queue item: deliveryTag={deliveryTag}; multiple={multiple}; ack={ack}.",
-                        ex);
-                    continue;
+                    foreach (var source in RemoveAllTaskCompletionSourcesUpTo(deliveryTag))
+                    {
+                        Task.Run(() => source.TrySetResult(ack));
+                    }
                 }
-
-                TrackSafe(_diagnostics.TrackAckSucceeded, ackArgs, stopwatch.Elapsed);
             }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"Unable to process ack queue item: deliveryTag={deliveryTag}; multiple={multiple}; ack={ack}.",
+                    ex);
+                return;
+            }
+
+            TrackSafe(_diagnostics.TrackAckSucceeded, ackArgs, stopwatch.Elapsed);
         }
 
         public Task<bool> PublishAsync(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
+            string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties,
             CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var taskCompletionSource = new TaskCompletionSource<bool>();
-            var queueItem = new PublishQueueItem(exchange, routingKey, body, properties, cancellationToken,
-                taskCompletionSource);
-
-            lock (_publishQueue)
+            if (_disposeCancellationToken.IsCancellationRequested)
             {
-                if (_isDisposed == 1)
-                {
-                    throw new ObjectDisposedException(nameof(AsyncPublisher));
-                }
-
-                EnqueuePublish(queueItem);
+                throw new ObjectDisposedException(nameof(AsyncPublisher));
             }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<bool>(cancellationToken);
+            }
+
+            var publishJob = new PublishQueueItem(exchange, routingKey, body, properties, cancellationToken,
+                new TaskCompletionSource<bool>());
+            var tryCancelPublishJob = _publishLoop.Enqueue(publishJob);
 
             TrackSafe(_diagnostics.TrackPublishTaskEnqueued,
                 new PublishArgs(exchange, routingKey, body, properties),
-                new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _publishEvent.Set();
+                CreateStatus());
 
-            return taskCompletionSource.Task;
+            return WaitForPublishCompletedOrCancelled(publishJob, tryCancelPublishJob, cancellationToken);
+        }
+
+        private async Task<bool> WaitForPublishCompletedOrCancelled(PublishQueueItem publishJob,
+            Func<bool> tryCancelJob, CancellationToken cancellationToken)
+        {
+            var jobTask = publishJob.TaskCompletionSource.Task;
+            var firstCompletedTask = await Task.WhenAny(
+                Task.Delay(-1, cancellationToken),
+                jobTask
+            ).ConfigureAwait(false);
+
+            if (firstCompletedTask != jobTask && tryCancelJob())
+            {
+                return await Task.FromCanceled<bool>(cancellationToken).ConfigureAwait(false);
+            }
+
+            return await jobTask.ConfigureAwait(false);
         }
 
         public void Dispose()
         {
-            bool shouldDispose;
-
-            lock (_publishQueue)
+            lock (_disposeCancellationSource)
             {
-                shouldDispose = _isDisposed == 0;
-                _isDisposed = 1;
-            }
+                if (_disposeCancellationSource.IsCancellationRequested)
+                {
+                    return;
+                }
 
-            if (!shouldDispose)
-            {
-                Task.WaitAll(_publishLoop, _ackLoop);
-                return;
+                _disposeCancellationSource.Cancel();
+                _disposeCancellationSource.Dispose();
             }
 
             TrackSafe(_diagnostics.TrackDisposeStarted);
@@ -306,10 +330,10 @@ namespace RabbitMqAsyncPublisher
             _model.BasicAcks -= OnBasicAcks;
             _model.BasicNacks -= OnBasicNacks;
 
-            _publishEvent.Set();
-            _ackJobQueueReadyEvent.Set();
-            Task.WaitAll(_publishLoop, _ackLoop);
+            _publishLoop.Stop().Wait();
+            _ackLoop.Stop().Wait();
 
+            // TODO: Set ObjectDisposedException for remaining publish jobs
             foreach (var source in RemoveAllTaskCompletionSourcesUpTo(ulong.MaxValue))
             {
                 Task.Run(() => source.TrySetException(new ObjectDisposedException(nameof(AsyncPublisher))));
@@ -352,38 +376,9 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private void EnqueueAck(AckJob item)
+        private AsyncPublisherStatus CreateStatus()
         {
-            Interlocked.Increment(ref _ackQueueSize);
-            _ackQueue.Enqueue(item);
-        }
-
-        private bool TryDequeueAck(out AckJob item)
-        {
-            if (_ackQueue.TryDequeue(out item))
-            {
-                Interlocked.Decrement(ref _ackQueueSize);
-                return true;
-            }
-
-            return false;
-        }
-
-        private void EnqueuePublish(PublishQueueItem item)
-        {
-            Interlocked.Increment(ref _publishQueueSize);
-            _publishQueue.Enqueue(item);
-        }
-
-        private bool TryDequeuePublish(out PublishQueueItem item)
-        {
-            if (_publishQueue.TryDequeue(out item))
-            {
-                Interlocked.Decrement(ref _publishQueueSize);
-                return true;
-            }
-
-            return false;
+            return new AsyncPublisherStatus(_publishLoop.QueueSize, _ackLoop.QueueSize, _completionSourceRegistrySize);
         }
 
         private bool IsModelClosed(out ShutdownEventArgs shutdownEventArgs)

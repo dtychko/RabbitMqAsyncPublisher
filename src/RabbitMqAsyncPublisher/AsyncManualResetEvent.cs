@@ -25,6 +25,8 @@ namespace RabbitMqAsyncPublisher
 
         public async Task<bool> WaitAsync(int millisecondsTimeout, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var capturedSource = _taskCompletionSource;
             var result = await Task.WhenAny(
                 Task.Delay(millisecondsTimeout, cancellationToken),

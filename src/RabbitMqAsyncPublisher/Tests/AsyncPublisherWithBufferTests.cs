@@ -12,6 +12,7 @@ using static Tests.TestUtils;
 namespace Tests
 {
     [TestFixture]
+    [Timeout(3000)]
     public class AsyncPublisherWithBufferTestsBase
     {
         [OneTimeSetUp]
@@ -81,17 +82,20 @@ namespace Tests
                 t3.IsCompleted.ShouldBeFalse();
 
                 await DequeueAndSetResultAsync(sources, true);
+                await Task.WhenAny(t1);
                 t1.IsCompleted.ShouldBe(true);
                 t1.Result.ShouldBeTrue();
                 t2.IsCompleted.ShouldBe(false);
                 t3.IsCompleted.ShouldBe(false);
 
                 await DequeueAndSetResultAsync(sources, false);
+                await Task.WhenAny(t2);
                 t2.IsCompleted.ShouldBe(true);
                 t2.Result.ShouldBe(false);
                 t3.IsCompleted.ShouldBe(false);
 
                 await DequeueAndSetResultAsync(sources, true);
+                await Task.WhenAny(t3);
                 t3.IsCompleted.ShouldBe(true);
                 t3.Result.ShouldBe(true);
             }
@@ -194,18 +198,15 @@ namespace Tests
 
                 cancellationTokenSource.Cancel();
 
-                Console.WriteLine("await Task.WhenAny(eventuallyCancelled)");
                 await Task.WhenAny(eventuallyCancelled);
                 eventuallyCancelled.IsCompleted.ShouldBeTrue();
                 eventuallyCancelled.IsCanceled.ShouldBeTrue();
 
-                var immediatelyCancelled = publisher.PublishAsync(default, default, ReadOnlyMemory<byte>.Empty, default,
-                    cancellationTokenSource.Token);
+                var immediatelyCancelled = TestPublish(publisher, cancellationToken: cancellationTokenSource.Token);
 
                 immediatelyCancelled.IsCompleted.ShouldBeTrue();
                 immediatelyCancelled.IsCanceled.ShouldBeTrue();
 
-                Console.WriteLine("await DequeueAndSetCanceledAsync(sources)");
                 await DequeueAndSetCanceledAsync(sources);
 
                 await Task.WhenAny(innerPublisherCancelled);
@@ -230,7 +231,7 @@ namespace Tests
             await SpinWaitFor(() => sources.Count == 1);
 
             var eventuallyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[2]));
-            eventuallyDisposed.IsFaulted.ShouldBeFalse();
+            eventuallyDisposed.IsCompleted.ShouldBeFalse();
 
             publisher.Dispose();
 
@@ -268,7 +269,6 @@ namespace Tests
 
             using (var publisherMock = new AsyncPublisherMock<int>(exchange =>
             {
-                Console.WriteLine($" << {exchange}");
                 var tcs = new TaskCompletionSource<int>();
                 handlers.TryDequeue(out var item);
                 Task.Run(() =>
@@ -285,8 +285,6 @@ namespace Tests
 
                 while (messages.TryDequeue(out var item))
                 {
-                    Console.WriteLine(
-                        $" {item.result.ToString()} ({item.body.Length}) >> [{Thread.CurrentThread.ManagedThreadId}]");
                     tasks.Add(publisher.PublishAsync(item.result.ToString(), string.Empty, item.body, default,
                         default));
                     expectedResults.Add(item.result);
@@ -308,6 +306,7 @@ namespace Tests
 
         [Test]
         [Explicit]
+        [Timeout(10000)]
         public async Task Perf()
         {
             var publisherMock = new AsyncPublisherMock<bool>(() =>
