@@ -48,7 +48,6 @@ namespace RabbitMqAsyncPublisher
             Model = model;
             _diagnostics = diagnostics ?? AsyncPublisherEmptyDiagnostics.NoDiagnostics;
 
-            // TODO: Make sure that "BasicAcks" and "BasicNacks" events are always fired on a single thread.
             Model.BasicAcks += OnBasicAcks;
             Model.BasicNacks += OnBasicNacks;
 

@@ -1,14 +1,53 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
+    using static DiagnosticsUtils;
+
+    public interface IAsyncPublisherWithBufferDiagnostics : IUnexpectedExceptionDiagnostics
+    {
+        void TrackJobEnqueued(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
+
+        void TrackJobStarting(PublishArgs publishArgs);
+
+        void TrackJobStarted(PublishArgs publishArgs);
+
+        void TrackJobSucceeded(PublishArgs publishArgs, TimeSpan duration);
+
+        void TrackJobCancelled(PublishArgs publishArgs, TimeSpan duration);
+
+        void TrackJobFailed(PublishArgs publishArgs, TimeSpan duration, Exception ex);
+
+        void TrackDisposeStarted();
+
+        void TrackDisposeSucceeded(TimeSpan duration);
+
+        void TrackStatus(AsyncPublisherWithBufferStatus status);
+    }
+
+    public class AsyncPublisherWithBufferStatus
+    {
+        public int JobQueueSize { get; }
+        public int ProcessingMessages { get; }
+        public int ProcessingBytes { get; }
+
+        public AsyncPublisherWithBufferStatus(int jobQueueSize, int processingMessages, int processingBytes)
+        {
+            JobQueueSize = jobQueueSize;
+            ProcessingMessages = processingMessages;
+            ProcessingBytes = processingBytes;
+        }
+    }
+
     public class AsyncPublisherWithBuffer<TResult> : IAsyncPublisher<TResult>
     {
         private readonly IAsyncPublisher<TResult> _decorated;
+        private readonly IAsyncPublisherWithBufferDiagnostics _diagnostics;
 
         private readonly Task _readLoopTask;
 
@@ -19,8 +58,8 @@ namespace RabbitMqAsyncPublisher
         private readonly object _currentStateSyncRoot = new object();
         private readonly int _processingMessagesLimit;
         private readonly int _processingBytesSoftLimit;
-        private int _processingMessages;
-        private int _processingBytes;
+        private volatile int _processingMessages;
+        private volatile int _processingBytes;
 
         private readonly CancellationTokenSource _disposeCancellationSource = new CancellationTokenSource();
         private readonly CancellationToken _disposeCancellationToken;
@@ -28,7 +67,8 @@ namespace RabbitMqAsyncPublisher
         public AsyncPublisherWithBuffer(
             IAsyncPublisher<TResult> decorated,
             int processingMessagesLimit = int.MaxValue,
-            int processingBytesSoftLimit = int.MaxValue)
+            int processingBytesSoftLimit = int.MaxValue,
+            IAsyncPublisherWithBufferDiagnostics diagnostics = default)
         {
             if (processingMessagesLimit <= 0)
             {
@@ -43,6 +83,7 @@ namespace RabbitMqAsyncPublisher
             _decorated = decorated;
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
+            _diagnostics = diagnostics;
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
@@ -54,6 +95,7 @@ namespace RabbitMqAsyncPublisher
             try
             {
                 await _jobQueueReadyEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
+                TrackStatusSafe();
 
                 while (!_disposeCancellationToken.IsCancellationRequested)
                 {
@@ -66,6 +108,7 @@ namespace RabbitMqAsyncPublisher
                     }
 
                     await _jobQueueReadyEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
+                    TrackStatusSafe();
                 }
             }
             catch (OperationCanceledException) when (_disposeCancellationToken.IsCancellationRequested)
@@ -74,13 +117,19 @@ namespace RabbitMqAsyncPublisher
             }
             catch (Exception ex)
             {
-                // TODO: Log unexpected error
-                Console.WriteLine(ex);
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    "Unexpected reader loop exception: " +
+                    $"jobQueueSize={_jobQueue.Size}; processingMessages={_processingMessages}; processingBytes={_processingBytes}",
+                    ex);
             }
         }
 
         private void HandleJob(Job job)
         {
+            var publishArgs = new PublishArgs(job.Exchange, job.RoutingKey, job.Body, job.Properties);
+            TrackSafe(_diagnostics.TrackJobStarting, publishArgs);
+            var stopwatch = Stopwatch.StartNew();
+
             try
             {
                 job.CancellationToken.ThrowIfCancellationRequested();
@@ -88,6 +137,7 @@ namespace RabbitMqAsyncPublisher
                 UpdateState(1, job.Body.Length);
                 var handleJobTask = _decorated.PublishAsync(job.Exchange, job.RoutingKey, job.Body,
                     job.Properties, job.CancellationToken);
+                TrackSafe(_diagnostics.TrackJobStarted, publishArgs);
 
                 // ReSharper disable once MethodSupportsCancellation
                 Task.Run(async () =>
@@ -97,14 +147,17 @@ namespace RabbitMqAsyncPublisher
                     try
                     {
                         var result = await handleJobTask.ConfigureAwait(false);
+                        TrackSafe(_diagnostics.TrackJobSucceeded, publishArgs, stopwatch.Elapsed);
                         resolve = () => job.TaskCompletionSource.TrySetResult(result);
                     }
                     catch (OperationCanceledException ex)
                     {
+                        TrackSafe(_diagnostics.TrackJobCancelled, publishArgs, stopwatch.Elapsed);
                         resolve = () => job.TaskCompletionSource.TrySetCanceled(ex.CancellationToken);
                     }
                     catch (Exception ex)
                     {
+                        TrackSafe(_diagnostics.TrackJobFailed, publishArgs, stopwatch.Elapsed, ex);
                         resolve = () => job.TaskCompletionSource.TrySetException(ex);
                     }
 
@@ -114,11 +167,15 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException ex)
             {
+                TrackSafe(_diagnostics.TrackJobCancelled, publishArgs, stopwatch.Elapsed);
+
                 // ReSharper disable once MethodSupportsCancellation
                 Task.Run(() => job.TaskCompletionSource.TrySetCanceled(ex.CancellationToken));
             }
             catch (Exception ex)
             {
+                TrackSafe(_diagnostics.TrackJobFailed, publishArgs, stopwatch.Elapsed, ex);
+
                 // ReSharper disable once MethodSupportsCancellation
                 Task.Run(() => job.TaskCompletionSource.TrySetException(ex));
             }
@@ -128,8 +185,8 @@ namespace RabbitMqAsyncPublisher
         {
             lock (_currentStateSyncRoot)
             {
-                _processingMessages += deltaMessages;
-                _processingBytes += deltaBytes;
+                Interlocked.Add(ref _processingMessages, deltaMessages);
+                Interlocked.Add(ref _processingBytes, deltaBytes);
 
                 if (_processingMessages < _processingMessagesLimit
                     && _processingBytes < _processingBytesSoftLimit)
@@ -170,6 +227,11 @@ namespace RabbitMqAsyncPublisher
             };
             var tryCancelJob = _jobQueue.Enqueue(job);
 
+            TrackSafe(_diagnostics.TrackJobEnqueued,
+                new PublishArgs(exchange, routingKey, body, properties),
+                new AsyncPublisherWithBufferStatus(_jobQueue.Size, _processingMessages, _processingBytes)
+            );
+
             _jobQueueReadyEvent.Set();
 
             return WaitForPublishCompletedOrCancelled(job, tryCancelJob, cancellationToken);
@@ -205,6 +267,9 @@ namespace RabbitMqAsyncPublisher
                 _disposeCancellationSource.Dispose();
             }
 
+            TrackSafe(_diagnostics.TrackDisposeStarted);
+            var stopwatch = Stopwatch.StartNew();
+
             _decorated.Dispose();
 
             // ReSharper disable once MethodSupportsCancellation
@@ -219,6 +284,15 @@ namespace RabbitMqAsyncPublisher
                     job.TaskCompletionSource.TrySetException(
                         new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>))));
             }
+
+            TrackSafe(_diagnostics.TrackDisposeSucceeded, stopwatch.Elapsed);
+        }
+
+        private void TrackStatusSafe()
+        {
+            TrackSafe(_diagnostics.TrackStatus,
+                new AsyncPublisherWithBufferStatus(_jobQueue.Size, _processingMessages, _processingBytes)
+            );
         }
 
         private struct Job
@@ -234,10 +308,15 @@ namespace RabbitMqAsyncPublisher
         private class JobQueue
         {
             private readonly LinkedList<Job> _queue = new LinkedList<Job>();
+            private volatile int _size;
+
+            public int Size => _size;
 
             public Func<bool> Enqueue(Job job)
             {
                 LinkedListNode<Job> queueNode;
+
+                Interlocked.Increment(ref _size);
 
                 lock (_queue)
                 {
@@ -257,8 +336,10 @@ namespace RabbitMqAsyncPublisher
                     }
 
                     _queue.Remove(jobNode);
-                    return true;
                 }
+
+                Interlocked.Decrement(ref _size);
+                return true;
             }
 
             public bool CanDequeueJob()
@@ -271,6 +352,8 @@ namespace RabbitMqAsyncPublisher
 
             public Job DequeueJob()
             {
+                Job job;
+
                 lock (_queue)
                 {
                     if (_queue.Count == 0)
@@ -278,10 +361,12 @@ namespace RabbitMqAsyncPublisher
                         throw new InvalidOperationException("Job queue is empty.");
                     }
 
-                    var job = _queue.First.Value;
+                    job = _queue.First.Value;
                     _queue.RemoveFirst();
-                    return job;
                 }
+
+                Interlocked.Decrement(ref _size);
+                return job;
             }
         }
     }
