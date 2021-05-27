@@ -81,10 +81,19 @@ namespace Tests
                 t3.IsCompleted.ShouldBeFalse();
 
                 await DequeueAndSetResultAsync(sources, true);
+                t1.IsCompleted.ShouldBe(true);
+                t1.Result.ShouldBeTrue();
+                t2.IsCompleted.ShouldBe(false);
+                t3.IsCompleted.ShouldBe(false);
 
-                t1.Result.ShouldBeTrue();
-                t1.Result.ShouldBeTrue();
-                t1.Result.ShouldBeTrue();
+                await DequeueAndSetResultAsync(sources, false);
+                t2.IsCompleted.ShouldBe(true);
+                t2.Result.ShouldBe(false);
+                t3.IsCompleted.ShouldBe(false);
+
+                await DequeueAndSetResultAsync(sources, true);
+                t3.IsCompleted.ShouldBe(true);
+                t3.Result.ShouldBe(true);
             }
         }
 
