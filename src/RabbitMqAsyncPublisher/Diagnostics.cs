@@ -17,21 +17,14 @@ namespace RabbitMqAsyncPublisher
         void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay);
     }
 
-    public class PublishArgs
+    public readonly struct PublishArgs
     {
-        public string Exchange { get; }
+        public readonly string Exchange;
+        public readonly string RoutingKey;
+        public readonly ReadOnlyMemory<byte> Body;
+        public readonly IBasicProperties Properties;
 
-        public string RoutingKey { get; }
-
-        public ReadOnlyMemory<byte> Body { get; }
-
-        public IBasicProperties Properties { get; }
-
-        public PublishArgs(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties)
+        public PublishArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties)
         {
             Exchange = exchange;
             RoutingKey = routingKey;
@@ -40,34 +33,40 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public class PublishUnsafeArgs : PublishArgs
+    public readonly struct PublishUnsafeArgs
     {
-        public ulong DeliveryTag { get; }
+        public readonly string Exchange;
+        public readonly string RoutingKey;
+        public readonly ReadOnlyMemory<byte> Body;
+        public readonly IBasicProperties Properties;
+        public readonly ulong DeliveryTag;
 
-        public PublishUnsafeArgs(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
-            ulong deliveryTag)
-            : base(exchange, routingKey, body, properties)
+        public PublishUnsafeArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+            IBasicProperties properties, ulong deliveryTag)
         {
+            Exchange = exchange;
+            RoutingKey = routingKey;
+            Body = body;
+            Properties = properties;
             DeliveryTag = deliveryTag;
         }
     }
 
-    public class PublishUnsafeAttemptArgs : PublishArgs
+    public readonly struct PublishUnsafeAttemptArgs
     {
-        public int Attempt { get; }
+        public readonly string Exchange;
+        public readonly string RoutingKey;
+        public readonly ReadOnlyMemory<byte> Body;
+        public readonly IBasicProperties Properties;
+        public readonly int Attempt;
 
-        public PublishUnsafeAttemptArgs(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
-            int attempt)
-            : base(exchange, routingKey, body, properties)
+        public PublishUnsafeAttemptArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+            IBasicProperties properties, int attempt)
         {
+            Exchange = exchange;
+            RoutingKey = routingKey;
+            Body = body;
+            Properties = properties;
             Attempt = attempt;
         }
     }
@@ -77,13 +76,15 @@ namespace RabbitMqAsyncPublisher
         public void TrackPublishUnsafeAttemptFailed(PublishUnsafeAttemptArgs args, TimeSpan duration,
             Exception ex)
         {
-            Console.WriteLine($" >> WithRetries/{nameof(TrackPublishUnsafeAttemptFailed)}/{args.Attempt}/error {duration.TotalMilliseconds}");
+            Console.WriteLine(
+                $" >> WithRetries/{nameof(TrackPublishUnsafeAttemptFailed)}/{args.Attempt}/error {duration.TotalMilliseconds}");
         }
 
         public void TrackPublishUnsafeAttemptCompleted(PublishUnsafeAttemptArgs args, TimeSpan duration,
             bool acknowledged)
         {
-            Console.WriteLine($" >> WithRetries/{nameof(TrackPublishUnsafeAttemptCompleted)}/{args.Attempt}/completed {duration.TotalMilliseconds}");
+            Console.WriteLine(
+                $" >> WithRetries/{nameof(TrackPublishUnsafeAttemptCompleted)}/{args.Attempt}/completed {duration.TotalMilliseconds}");
         }
 
         public void TrackCanPublishWait(PublishArgs args)
@@ -100,7 +101,6 @@ namespace RabbitMqAsyncPublisher
         {
             Console.WriteLine($" >> WithRetries/{nameof(TrackPublishUnsafeAttempt)}/{args.Attempt}/started");
         }
-
     }
 
     public class EmptyDiagnostics : IAsyncPublisherWithRetriesDiagnostics

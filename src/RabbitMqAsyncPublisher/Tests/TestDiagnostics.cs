@@ -47,5 +47,7 @@ namespace Tests
         }
 
         private static string GetTestTag(PublishArgs args) => TestUtils.GetMessageTag(args.Properties);
+
+        private static string GetTestTag(PublishUnsafeAttemptArgs args) => TestUtils.GetMessageTag(args.Properties);
     }
 }
