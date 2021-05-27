@@ -240,6 +240,7 @@ namespace Tests
 
                 cancellationTokenSource.Cancel();
 
+                Console.WriteLine("await Task.WhenAny(eventuallyCancelled)");
                 await Task.WhenAny(eventuallyCancelled);
                 eventuallyCancelled.IsCompleted.ShouldBeTrue();
                 eventuallyCancelled.IsCanceled.ShouldBeTrue();
@@ -250,6 +251,7 @@ namespace Tests
                 immediatelyCancelled.IsCompleted.ShouldBeTrue();
                 immediatelyCancelled.IsCanceled.ShouldBeTrue();
 
+                Console.WriteLine("await DequeueAndSetCanceledAsync(sources)");
                 await DequeueAndSetCanceledAsync(sources);
 
                 await Task.WhenAny(innerPublisherCancelled);

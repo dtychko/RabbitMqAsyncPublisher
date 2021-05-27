@@ -1,4 +1,5 @@
-﻿using System.Threading;
+﻿using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace RabbitMqAsyncPublisher
@@ -30,7 +31,8 @@ namespace RabbitMqAsyncPublisher
                 capturedSource.Task
             ).ConfigureAwait(false);
 
-            await result;
+            Console.WriteLine($"WaitAsync released {result.Status}");
+            await result.ConfigureAwait(false);
             return result == capturedSource.Task;
         }
 
