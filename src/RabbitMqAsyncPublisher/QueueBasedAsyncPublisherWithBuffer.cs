@@ -28,7 +28,6 @@ namespace RabbitMqAsyncPublisher
 
         private readonly object _currentStateSyncRoot = new object();
 
-        // private readonly ConcurrentQueue<Job> _jobQueue = new ConcurrentQueue<Job>();
         private readonly LinkedList<Job> _jobQueue = new LinkedList<Job>();
         private readonly AsyncManualResetEvent _queueReadyEvent = new AsyncManualResetEvent(false);
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
@@ -57,22 +56,6 @@ namespace RabbitMqAsyncPublisher
             _readLoopTask = Task.Run(RunReaderLoop);
         }
 
-        private bool TryDequeueJob(out Job job)
-        {
-            lock (_jobQueue)
-            {
-                if (_jobQueue.Count > 0)
-                {
-                    job = _jobQueue.First.Value;
-                    _jobQueue.RemoveFirst();
-                    return true;
-                }
-
-                job = default;
-                return false;
-            }
-        }
-
         private async void RunReaderLoop()
         {
             try
@@ -90,9 +73,7 @@ namespace RabbitMqAsyncPublisher
 
                         try
                         {
-                            Console.WriteLine("waiting gate ...");
                             await WaitForGateAsync(cancellationToken).ConfigureAwait(false);
-                            Console.WriteLine("waiting gate completed");
                             var handleJobTask = HandleJobAsync(job);
 
                             Task.Run(async () =>
@@ -168,27 +149,21 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private Task WaitForGateAsync(CancellationToken cancellationToken)
+        private async Task WaitForGateAsync(CancellationToken cancellationToken)
         {
-            if (_disposeCancellation.IsCancellationRequested)
-            {
-                return Task.FromCanceled(_disposeCancellation.Token);
-            }
+            _disposeCancellation.Token.ThrowIfCancellationRequested();
 
             if (!cancellationToken.CanBeCanceled)
             {
-                return _gateEvent.WaitAsync(_disposeCancellation.Token);
+                await _gateEvent.WaitAsync(_disposeCancellation.Token);
             }
 
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return Task.FromCanceled(cancellationToken);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
 
             using (var combinedSource =
                 CancellationTokenSource.CreateLinkedTokenSource(_disposeCancellation.Token, cancellationToken))
             {
-                return _gateEvent.WaitAsync(combinedSource.Token);
+                await _gateEvent.WaitAsync(combinedSource.Token);
             }
         }
 
@@ -241,23 +216,48 @@ namespace RabbitMqAsyncPublisher
             var jobNode = EnqueueJob(job);
             _queueReadyEvent.Set();
 
-            return Foo(jobNode, cancellationToken);
+            return WaitForPublishCompletedOrCancelled(jobNode, cancellationToken);
         }
 
-        private async Task<TResult> Foo(LinkedListNode<Job> jobNode, CancellationToken cancellationToken)
+        private async Task<TResult> WaitForPublishCompletedOrCancelled(LinkedListNode<Job> jobNode,
+            CancellationToken cancellationToken)
         {
             var jobTask = jobNode.Value.TaskCompletionSource.Task;
-            var completedTask = await Task.WhenAny(
-                jobTask,
-                Task.Delay(-1, cancellationToken)
+            var firstCompletedTask = await Task.WhenAny(
+                Task.Delay(-1, cancellationToken),
+                jobTask
             ).ConfigureAwait(false);
 
-            if (completedTask != jobTask && TryRemoveJob(jobNode))
+            if (firstCompletedTask != jobTask && TryRemoveJob(jobNode))
             {
                 return await Task.FromCanceled<TResult>(cancellationToken).ConfigureAwait(false);
             }
 
             return await jobTask.ConfigureAwait(false);
+        }
+
+        private LinkedListNode<Job> EnqueueJob(Job job)
+        {
+            lock (_jobQueue)
+            {
+                return _jobQueue.AddLast(job);
+            }
+        }
+
+        private bool TryDequeueJob(out Job job)
+        {
+            lock (_jobQueue)
+            {
+                if (_jobQueue.Count > 0)
+                {
+                    job = _jobQueue.First.Value;
+                    _jobQueue.RemoveFirst();
+                    return true;
+                }
+
+                job = default;
+                return false;
+            }
         }
 
         private bool TryRemoveJob(LinkedListNode<Job> jobNode)
@@ -271,14 +271,6 @@ namespace RabbitMqAsyncPublisher
 
                 _jobQueue.Remove(jobNode);
                 return true;
-            }
-        }
-
-        private LinkedListNode<Job> EnqueueJob(Job job)
-        {
-            lock (_jobQueue)
-            {
-                return _jobQueue.AddLast(job);
             }
         }
 
