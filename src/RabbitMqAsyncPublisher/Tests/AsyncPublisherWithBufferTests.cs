@@ -172,7 +172,7 @@ namespace Tests
         [Test]
         public async Task ShouldCancel()
         {
-            await TestUtils.RunWithTimeout(async rootCancellationToken =>
+            await RunWithTimeout(async rootCancellationToken =>
             {
                 var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
                 var publisherMock = new AsyncPublisherMock<bool>(() =>
@@ -213,7 +213,6 @@ namespace Tests
                 innerPublisherCancelled.IsCanceled.ShouldBeTrue();
             });
         }
-
 
         [Test]
         public async Task ShouldDispose()
