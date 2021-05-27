@@ -45,17 +45,17 @@ namespace RabbitMqAsyncPublisher
                 throw new ArgumentException("Positive number is expected.", nameof(processingBytesSoftLimit));
             }
 
-            _decorated = decorated;
+            _decorated = decorated ?? throw new ArgumentNullException(nameof(decorated));
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
             _diagnostics = diagnostics ?? AsyncPublisherWithBufferDiagnostics.NoDiagnostics;
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
-            _readerLoopTask = Task.Run(RunReaderLoop);
+            _readerLoopTask = Task.Run(StartReaderLoop);
         }
 
-        private async void RunReaderLoop()
+        private async void StartReaderLoop()
         {
             try
             {

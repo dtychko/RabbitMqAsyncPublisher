@@ -14,29 +14,35 @@ namespace RabbitMqAsyncPublisher
 
     public class AsyncPublisher : IAsyncPublisher<bool>
     {
+        private readonly IModel _model;
         private readonly IAsyncPublisherDiagnostics _diagnostics;
-        private readonly ConcurrentQueue<PublishQueueItem> _publishQueue = new ConcurrentQueue<PublishQueueItem>();
-        private readonly ConcurrentQueue<AckQueueItem> _ackQueue = new ConcurrentQueue<AckQueueItem>();
-
-        private readonly AsyncPublisherTaskCompletionSourceRegistry _completionSourceRegistry =
-            new AsyncPublisherTaskCompletionSourceRegistry();
-
-        private volatile int _publishQueueSize;
-        private volatile int _ackQueueSize;
-        private int _completionSourceRegistrySize;
-
-        private readonly AsyncManualResetEvent _publishEvent = new AsyncManualResetEvent(false);
-        private readonly AsyncManualResetEvent _ackEvent = new AsyncManualResetEvent(false);
 
         private readonly Task _publishLoop;
         private readonly Task _ackLoop;
 
-        private volatile int _isDisposed;
+        private readonly ConcurrentQueue<PublishQueueItem> _publishQueue = new ConcurrentQueue<PublishQueueItem>();
+        private volatile int _publishQueueSize;
 
-        public IModel Model { get; }
+        private readonly ConcurrentQueue<AckJob> _ackQueue = new ConcurrentQueue<AckJob>();
+        private volatile int _ackQueueSize;
+
+        private readonly AsyncPublisherTaskCompletionSourceRegistry _completionSourceRegistry =
+            new AsyncPublisherTaskCompletionSourceRegistry();
+
+        private int _completionSourceRegistrySize;
+
+        private readonly AsyncManualResetEvent _publishEvent = new AsyncManualResetEvent(false);
+        private readonly AsyncManualResetEvent _ackJobQueueReadyEvent = new AsyncManualResetEvent(false);
+
+        private volatile int _isDisposed;
 
         public AsyncPublisher(IModel model, IAsyncPublisherDiagnostics diagnostics = null)
         {
+            if (model is null)
+            {
+                throw new ArgumentNullException(nameof(model));
+            }
+
             // Heuristic based on reverse engineering of "RabbitMQ.Client" lib
             // that helps to make sure that "ConfirmSelect" method was called on the model
             // to enable confirm mode.
@@ -45,11 +51,11 @@ namespace RabbitMqAsyncPublisher
                 throw new ArgumentException("Channel should be in confirm mode.");
             }
 
-            Model = model;
+            _model = model;
             _diagnostics = diagnostics ?? AsyncPublisherEmptyDiagnostics.NoDiagnostics;
 
-            Model.BasicAcks += OnBasicAcks;
-            Model.BasicNacks += OnBasicNacks;
+            _model.BasicAcks += OnBasicAcks;
+            _model.BasicNacks += OnBasicNacks;
 
             _publishLoop = Task.Run(StartPublishLoop);
             _ackLoop = Task.Run(StartAckLoop);
@@ -57,20 +63,20 @@ namespace RabbitMqAsyncPublisher
 
         private void OnBasicAcks(object sender, BasicAckEventArgs e)
         {
-            EnqueueAck(new AckQueueItem(e.DeliveryTag, e.Multiple, true));
-            TrackSafe(_diagnostics.TrackAckTaskEnqueued,
+            EnqueueAck(new AckJob(e.DeliveryTag, e.Multiple, true));
+            TrackSafe(_diagnostics.TrackAckJobEnqueued,
                 new AckArgs(e.DeliveryTag, e.Multiple, true),
                 new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _ackEvent.Set();
+            _ackJobQueueReadyEvent.Set();
         }
 
         private void OnBasicNacks(object sender, BasicNackEventArgs e)
         {
-            EnqueueAck(new AckQueueItem(e.DeliveryTag, e.Multiple, false));
-            TrackSafe(_diagnostics.TrackAckTaskEnqueued,
+            EnqueueAck(new AckJob(e.DeliveryTag, e.Multiple, false));
+            TrackSafe(_diagnostics.TrackAckJobEnqueued,
                 new AckArgs(e.DeliveryTag, e.Multiple, false),
                 new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _ackEvent.Set();
+            _ackJobQueueReadyEvent.Set();
         }
 
         private async void StartPublishLoop()
@@ -104,14 +110,14 @@ namespace RabbitMqAsyncPublisher
         {
             try
             {
-                await _ackEvent.WaitAsync().ConfigureAwait(false);
+                await _ackJobQueueReadyEvent.WaitAsync().ConfigureAwait(false);
                 TrackStatusSafe();
 
                 while (_isDisposed == 0 || _ackQueueSize > 0)
                 {
-                    _ackEvent.Reset();
+                    _ackJobQueueReadyEvent.Reset();
                     RunAckInnerLoop();
-                    await _ackEvent.WaitAsync().ConfigureAwait(false);
+                    await _ackJobQueueReadyEvent.WaitAsync().ConfigureAwait(false);
                     TrackStatusSafe();
                 }
             }
@@ -174,7 +180,7 @@ namespace RabbitMqAsyncPublisher
                         taskCompletionSource.Task.ContinueWith(_ => { registration.Dispose(); });
                     }
 
-                    seqNo = Model.NextPublishSeqNo;
+                    seqNo = _model.NextPublishSeqNo;
                 }
                 catch (Exception ex)
                 {
@@ -191,7 +197,7 @@ namespace RabbitMqAsyncPublisher
                 try
                 {
                     RegisterTaskCompletionSource(seqNo, taskCompletionSource);
-                    Model.BasicPublish(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
+                    _model.BasicPublish(publishQueueItem.Exchange, publishQueueItem.RoutingKey,
                         publishQueueItem.Properties, publishQueueItem.Body);
                 }
                 catch (Exception ex)
@@ -297,11 +303,11 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackDisposeStarted);
             var stopwatch = Stopwatch.StartNew();
 
-            Model.BasicAcks -= OnBasicAcks;
-            Model.BasicNacks -= OnBasicNacks;
+            _model.BasicAcks -= OnBasicAcks;
+            _model.BasicNacks -= OnBasicNacks;
 
             _publishEvent.Set();
-            _ackEvent.Set();
+            _ackJobQueueReadyEvent.Set();
             Task.WaitAll(_publishLoop, _ackLoop);
 
             foreach (var source in RemoveAllTaskCompletionSourcesUpTo(ulong.MaxValue))
@@ -346,13 +352,13 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private void EnqueueAck(AckQueueItem item)
+        private void EnqueueAck(AckJob item)
         {
             Interlocked.Increment(ref _ackQueueSize);
             _ackQueue.Enqueue(item);
         }
 
-        private bool TryDequeueAck(out AckQueueItem item)
+        private bool TryDequeueAck(out AckJob item)
         {
             if (_ackQueue.TryDequeue(out item))
             {
@@ -383,7 +389,7 @@ namespace RabbitMqAsyncPublisher
         private bool IsModelClosed(out ShutdownEventArgs shutdownEventArgs)
         {
             shutdownEventArgs = default;
-            Interlocked.Exchange(ref shutdownEventArgs, Model.CloseReason);
+            Interlocked.Exchange(ref shutdownEventArgs, _model.CloseReason);
             return !(shutdownEventArgs is null);
         }
 
@@ -409,13 +415,13 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private class AckQueueItem
+        private readonly struct AckJob
         {
-            public ulong DeliveryTag { get; }
-            public bool Multiple { get; }
-            public bool Ack { get; }
+            public readonly ulong DeliveryTag;
+            public readonly bool Multiple;
+            public readonly bool Ack;
 
-            public AckQueueItem(ulong deliveryTag, bool multiple, bool ack)
+            public AckJob(ulong deliveryTag, bool multiple, bool ack)
             {
                 DeliveryTag = deliveryTag;
                 Multiple = multiple;

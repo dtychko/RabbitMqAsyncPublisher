@@ -12,7 +12,7 @@ namespace RabbitMqAsyncPublisher
 
         void TrackPublishFailed(PublishArgs publishArgs, ulong deliveryTag, TimeSpan duration, Exception ex);
 
-        void TrackAckTaskEnqueued(AckArgs ackArgs, AsyncPublisherStatus status);
+        void TrackAckJobEnqueued(AckArgs ackArgs, AsyncPublisherStatus status);
 
         void TrackAckStarted(AckArgs ackArgs);
 
@@ -88,7 +88,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackAckTaskEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
+        public virtual void TrackAckJobEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
         {
         }
 
@@ -140,9 +140,9 @@ namespace RabbitMqAsyncPublisher
             Console.WriteLine($" >> {nameof(TrackPublishFailed)}: {deliveryTag} in {duration.TotalMilliseconds}ms {ex}");
         }
 
-        public void TrackAckTaskEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
+        public void TrackAckJobEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
         {
-            Console.WriteLine($" >> {nameof(TrackAckTaskEnqueued)}: {ackArgs.DeliveryTag}, {status}");
+            Console.WriteLine($" >> {nameof(TrackAckJobEnqueued)}: {ackArgs.DeliveryTag}, {status}");
         }
 
         public void TrackAckStarted(AckArgs ackArgs)
