@@ -5,9 +5,9 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using NSubstitute;
 using NUnit.Framework;
 using RabbitMQ.Client;
-using RabbitMQ.Client.Exceptions;
 using RabbitMqAsyncPublisher;
 using Shouldly;
 using static Tests.TestUtils;
@@ -17,179 +17,172 @@ namespace Tests
     [TestFixture]
     public class RandomizedPublishTests
     {
-        private static readonly Random _random = new Random();
-
-        [Test]
-        public async Task ShouldRetryWhenBasicPublishThrowsSynchronousException(
-            [Values(1000)] int publishTaskCount,
-            [Values(100)] int failEveryNth)
+        [OneTimeSetUp]
+        public void TestFixtureSetUp()
         {
-            ConfigureThreadPool(publishTaskCount);
-
-            var modelPublishCount = 0;
-
-            var model = new TestRabbitModel(request =>
-            {
-                if (Interlocked.Increment(ref modelPublishCount) % failEveryNth == 0)
-                {
-                    throw new AlreadyClosedException(new ShutdownEventArgs(ShutdownInitiator.Peer, 0, String.Empty));
-                }
-
-                async Task<bool> Run()
-                {
-                    await Task.Delay(_random.Next(1, 129));
-                    return true;
-                }
-
-                return Run();
-            });
-
-            await RunWithTimeout(async cancellationToken =>
-            {
-                using (var publisher = CreatePublisher(model, new TestDiagnostics(), TimeSpan.FromMilliseconds(10)))
-                {
-                    var publishTasks = new ConcurrentBag<Task>();
-                    var counter = 0;
-
-                    for (var i = 0; i < publishTaskCount; i++)
-                    {
-                        publishTasks.Add(Task.Run(() =>
-                            {
-                                var messageIndex = Interlocked.Increment(ref counter);
-                                var messageTag = $"Message #{messageIndex}";
-                                var body = Encoding.UTF8.GetBytes(messageTag);
-                                var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
-
-                                return publisher.PublishAsync(
-                                    "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
-                            },
-                            cancellationToken));
-                    }
-
-                    await Task.WhenAll(publishTasks);
-
-                    var expectedPublishCount = publishTaskCount + publishTaskCount / failEveryNth;
-                    model.PublishCalls.Count.ShouldBe(expectedPublishCount);
-                    modelPublishCount.ShouldBe(expectedPublishCount);
-                }
-            });
+            ConfigureThreadPool(1000);
         }
 
         [Test]
-        [TestCase(1, 1, 2, 2, 4, 20, 80, 10)]
-        [TestCase(100, 1, 2, 2, 4, 20, 80, 10)]
-        [TestCase(500, 10, 20, 20, 40, 30, 70, 10)]
-        [TestCase(500, 1, 2, 1, 2, 20, 80, 10)]
-        public async Task ShouldRetryWhenModelShutdownsAndRecovers(
+        [TestCase(87654, 10, 5, 10, 20, 40, 20, 80, 10)]
+        public async Task LifecycleIntegrationTest(
+            int seed,
             int publishTaskCount,
-            int minSyncPublishWaitTime,
-            int maxSyncPublishWaitTime,
+            int minSyncPublishSpinIterations,
+            int maxSyncPublishSpinIterations,
             int minAsyncPublishWaitTime,
             int maxAsyncPublishWaitTime,
-            int shutdownDuration,
-            int recoveryDuration,
-            int retryDelayMs)
+            int minShutdownDuration,
+            int maxShutdownDuration,
+            int retryDuration)
         {
-            ConfigureThreadPool(publishTaskCount);
+            var random = new Random(seed);
+            var createdModels = new List<TestNonRecoverableRabbitModel>();
 
-            var model = new TestRabbitModel(async request =>
+            var connectionFactory = Substitute.For<IConnectionFactory>();
+            connectionFactory.CreateConnection().ReturnsForAnyArgs(c =>
             {
-                Console.WriteLine($"Starting next publish for {GetMessageTag(request.Properties)}");
-                SyncWait(_random.Next(minSyncPublishWaitTime, maxSyncPublishWaitTime));
-                await Task.Delay(_random.Next(minAsyncPublishWaitTime, minAsyncPublishWaitTime));
-                return true;
+                return new TestNonRecoverableConnection(() =>
+                {
+                    var model = new TestNonRecoverableRabbitModel(async publishArgs =>
+                    {
+                        Console.WriteLine($" >> Starting next publish for {GetMessageTag(publishArgs.Properties)}");
+                        SyncWait(random.Next(minSyncPublishSpinIterations, maxSyncPublishSpinIterations));
+                        await Task.Delay(random.Next(minAsyncPublishWaitTime, maxAsyncPublishWaitTime));
+                        return true;
+                    });
+                    createdModels.Add(model);
+                    return model;
+                });
             });
 
-            var allPublishesFinished = false;
+            var diagnostics = new TestDiagnostics();
 
             await RunWithTimeout(async cancellationToken =>
             {
-                var diagnostics = new TestDiagnostics();
-                var publishUnsafeTasks = new List<PublishTask>();
-                using (var publisher = CreatePublisher(model, diagnostics, TimeSpan.FromMilliseconds(retryDelayMs)))
+                IReadOnlyList<Task> publishTasks;
+                var publishTaskDescriptors = new ConcurrentBag<PublishTask>();
+
+                using (var publisherProxy = new AsyncPublisherProxy<bool>())
+                using (var retryingPublisher = new AsyncPublisherWithRetries(
+                    publisherProxy, TimeSpan.FromMilliseconds(retryDuration), diagnostics))
                 {
-                    Task modelLifecycleTask = default;
-                    modelLifecycleTask = Task.Run(() =>
+                    using (StartAutoRecovery(connectionFactory, CreatePublisher, ImitateShutdownBound))
                     {
-                        model.FireModelShutdown(new ShutdownEventArgs(default, default, default));
+                        var counter = 0;
+                        var publishSyncRoot = new object();
 
-                        while (!Volatile.Read(ref allPublishesFinished))
-                        {
-                            Console.WriteLine(
-                                $"Starting next model lifecycle step: {allPublishesFinished}, {cancellationToken.IsCancellationRequested}, {modelLifecycleTask.Status}");
-
-                            Task.Delay(shutdownDuration, cancellationToken).Wait(cancellationToken);
-                            model.FireRecovery(EventArgs.Empty);
-
-                            Task.Delay(recoveryDuration, cancellationToken).Wait(cancellationToken);
-                            model.FireModelShutdown(new ShutdownEventArgs(default, default, default));
-                        }
-                    }, cancellationToken);
-
-                    var publishTasks = new List<Task>();
-                    var counter = 0;
-
-                    for (var i = 0; i < publishTaskCount; i++)
-                    {
-                        publishTasks.Add(Task.Run(
-                            () =>
+                        publishTasks = Enumerable
+                            .Range(1, publishTaskCount)
+                            .Select(_ => Task.Run(() =>
                             {
                                 // Publish tasks are enqueued into publisher under lock
                                 // to ensure that they start executing in predictable order,
                                 // so that we can make test assertions regarding their retry order.
-                                lock (publishTasks)
+                                lock (publishSyncRoot)
                                 {
                                     var messageIndex = Interlocked.Increment(ref counter);
                                     var messageTag = $"Message #{messageIndex}";
                                     var body = Encoding.UTF8.GetBytes(messageTag);
                                     var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
-                                    var unsafeTask = publisher.PublishAsync(
+                                    var task = retryingPublisher.PublishAsync(
                                         "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
-                                    publishUnsafeTasks.Add(
-                                        new PublishTask {Task = unsafeTask, MessageIndex = messageIndex, MessageTag = messageTag});
-                                    return unsafeTask;
+                                    publishTaskDescriptors.Add(
+                                        new PublishTask
+                                            {Task = task, MessageIndex = messageIndex, MessageTag = messageTag});
+                                    return task;
                                 }
-                            },
-                            cancellationToken));
-                    }
+                            }, cancellationToken))
+                            .ToList();
 
-                    try
-                    {
                         await Task.WhenAll(publishTasks);
                     }
-                    finally
+
+                    IDisposable CreatePublisher(IModel model)
                     {
-                        Volatile.Write(ref allPublishesFinished, true);
+                        var innerPublisher =
+                            new AsyncPublisher(model, new AsyncPublisherConsoleDiagnostics());
+                        return publisherProxy.ConnectTo(innerPublisher);
                     }
-
-                    Console.WriteLine(
-                        $"~~~ finished with {model.PublishCalls.Count} publishes: {string.Join(",", publishTasks.Select(x => x.Status))}");
-
-                    await modelLifecycleTask;
+                    
                 }
 
-                diagnostics.FailedRetryAttemptCount.ShouldBeGreaterThan(0);
-                model.PublishCalls.Count.ShouldBeGreaterThanOrEqualTo(publishTaskCount);
+                var publishCalls = createdModels.SelectMany(x => x.PublishCalls).ToList();
+                Console.WriteLine(
+                    $" >> Finished publishing with {createdModels.Count} model(s) and {publishCalls.Count} total publish call(s)");
+                Console.WriteLine("Publish tasks status: " + string.Join(",", publishTasks.Select(x => x.Status)));
 
-                AssertRetriesAreOrdered(publishUnsafeTasks);
-                AssertAllPublishesAreAcked(model, publishUnsafeTasks);
+                diagnostics.FailedRetryAttemptCount.ShouldBeGreaterThan(0,
+                    "Test sanity check: at least 1 retry should actually happen");
+                publishCalls.Count.ShouldBeGreaterThanOrEqualTo(publishTaskCount);
+                AssertRetriesAreOrdered(publishTaskDescriptors);
+                AssertAllPublishesAreAcked(createdModels.SelectMany(x => x.SuccessfullyCompletedPublishes).ToList(),
+                    publishTaskDescriptors);
+                
+                IDisposable ImitateShutdownBound(IConnection connection)
+                {
+                    return ImitateConnectionShutdown(
+                        (TestNonRecoverableConnection) connection,
+                        random.Next(minShutdownDuration, maxShutdownDuration));
+                }
             });
+        }
+
+        /// <summary>
+        /// Starts a hierarchy of connection -> model -> publisher with auto-recovery and a concurrent shutdown loop,
+        /// which periodically causes connection and models to be shut down,
+        /// which in turn should stop publishers bound to models, failing currently active publish tasks.
+        /// </summary>
+        private static AutoRecovery<AutoRecoveryConnection> StartAutoRecovery(
+            IConnectionFactory connectionFactory,
+            Func<IModel, IDisposable> createPublisher,
+            Func<IConnection, IDisposable> imitateShutdown)
+        {
+            return AutoRecovery.StartConnection(
+                connectionFactory,
+                _ => TimeSpan.FromMilliseconds(1),
+                new AutoRecoveryConsoleDiagnostics("Connection"),
+                connection => AutoRecovery.StartModel(
+                    connection,
+                    _ => TimeSpan.FromMilliseconds(1),
+                    new AutoRecoveryConsoleDiagnostics($"Model/{Guid.NewGuid():D}"),
+                    createPublisher),
+                imitateShutdown);
+        }
+
+        private static IDisposable ImitateConnectionShutdown(TestNonRecoverableConnection connection,
+            int shutdownDuration)
+        {
+            var isDisposed = false;
+
+            Task.Run(async () =>
+            {
+                if (!isDisposed)
+                {
+                    await Task.Delay(shutdownDuration);
+                    connection.ImitateClose(new ShutdownEventArgs(ShutdownInitiator.Application, 200, "Test shutdown"));
+                }
+            });
+
+            return new Disposable(() => isDisposed = true);
         }
 
         /// <remarks>
         /// By the end of the test all messages should be successfully published (with or without retries).
-        /// This method checks that test model received all necessary <see cref="TestRabbitModel.BasicPublish"/> calls,
-        /// was able to complete them and fire ACK messages via <see cref="TestRabbitModel.BasicAcks"/>. 
+        /// This method checks that test model received all necessary <see cref="TestRecoverableRabbitModel.BasicPublish"/> calls,
+        /// was able to complete them and fire ACK messages via <see cref="TestRecoverableRabbitModel.BasicAcks"/>. 
         /// </remarks>
         private static void AssertAllPublishesAreAcked(
-            TestRabbitModel model,
+            IReadOnlyCollection<PublishRequest> acks,
             IEnumerable<PublishTask> publishTasks)
         {
             var unackedTags = new List<string>();
 
+            Console.WriteLine($" >> Acks: {string.Join(",", acks.Select(a => GetMessageTag(a.Properties)))}");
+
             foreach (var pt in publishTasks)
             {
-                if (model.Acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) != 1)
+                if (acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) == 0)
                 {
                     unackedTags.Add(pt.MessageTag);
                 }
@@ -228,15 +221,6 @@ namespace Tests
             });
         }
 
-        private IAsyncPublisher<RetryingPublisherResult> CreatePublisher(
-            TestRabbitModel model, TestDiagnostics diagnostics,
-            TimeSpan retryDelay)
-        {
-            return new AsyncPublisherWithRetries(
-                new AsyncPublisher(model),
-                retryDelay, diagnostics);
-        }
-
         /// <summary>
         /// Represents a task/job to publish a single message in test scenario
         /// </summary>
@@ -251,7 +235,7 @@ namespace Tests
             /// Represents message generation order, later messages have larger values.
             /// </summary>
             public int MessageIndex { get; set; }
-            
+
             /// <summary>
             /// Unique message identifier which is also appended to message's <see cref="TestBasicProperties"/>.
             /// Can be used to correlate messages in assertions and under debug.

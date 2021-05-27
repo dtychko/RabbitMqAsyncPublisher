@@ -87,8 +87,11 @@
         <Compile Include="AsyncPublisherWithBufferTests.cs" />
         <Compile Include="AutoRecoveryTests.cs" />
         <Compile Include="TestAutoRecoveryResource.cs" />
+        <Compile Include="TestBasicProperties.cs" />
         <Compile Include="TestDiagnostics.cs" />
-        <Compile Include="TestRabbitModel.cs" />
+        <Compile Include="TestNonRecoverableConnection.cs" />
+        <Compile Include="TestNonRecoverableRabbitModel.cs" />
+        <Compile Include="TestRecoverableRabbitModel.cs" />
         <Compile Include="RandomizedPublishTests.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />
         <Compile Include="TestUtils.cs" />

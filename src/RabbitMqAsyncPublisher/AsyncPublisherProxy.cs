@@ -63,5 +63,16 @@ namespace RabbitMqAsyncPublisher
         {
             // Lifecycle of proxied implementation is controlled by external code, no need to dispose it here
         }
+
+        public IDisposable ConnectTo(IAsyncPublisher<TResult> innerPublisher)
+        {
+            SetImplementation(innerPublisher);
+            return new Disposable(() =>
+            {
+                // todo: catch when first throws an exception
+                Reset();
+                innerPublisher.Dispose();
+            });
+        }
     }
 }

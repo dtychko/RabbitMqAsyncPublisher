@@ -102,17 +102,9 @@ namespace RabbitMqAsyncPublisher
                             model =>
                             {
                                 model.ConfirmSelect();
-                                
                                 var innerPublisher = new AsyncPublisher(model,
                                     new AsyncPublisherConsoleDiagnostics());
-                                publisherProxy.SetImplementation(innerPublisher);
-
-                                return new Disposable(() =>
-                                {
-                                    // todo: catch when first throws an exception
-                                    publisherProxy.Reset();
-                                    innerPublisher.Dispose();
-                                });
+                                return publisherProxy.ConnectTo(innerPublisher);
                             });
                     }))
                 {
