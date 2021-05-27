@@ -50,94 +50,121 @@ namespace RabbitMqAsyncPublisher
             _processingMessagesLimit = processingMessagesLimit;
             _processingBytesSoftLimit = processingBytesSoftLimit;
 
-            _readLoopTask = Task.Run(() => RunReaderLoop(_disposeCancellation.Token));
+            _readLoopTask = Task.Run(RunReaderLoop);
         }
 
-        private async void RunReaderLoop(CancellationToken cancellationToken)
+        private async void RunReaderLoop()
         {
-            // TODO: async void error handling
-
-            await _queueReadyEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
-
-            while (!cancellationToken.IsCancellationRequested)
+            try
             {
-                _queueReadyEvent.Reset();
-                while (_jobQueue.TryDequeue(out var job))
+                await _queueReadyEvent.WaitAsync(_disposeCancellation.Token).ConfigureAwait(false);
+
+                while (!_disposeCancellation.IsCancellationRequested)
                 {
-                    using (var combinedSource =
-                        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, job.CancellationToken))
+                    _queueReadyEvent.Reset();
+
+                    while (_jobQueue.TryDequeue(out var job))
                     {
+                        var taskCompletionSource = job.TaskCompletionSource;
+                        var cancellationToken = job.CancellationToken;
+
                         try
                         {
-                            await _gateEvent.WaitAsync(combinedSource.Token).ConfigureAwait(false);
+                            await WaitForGateAsync(cancellationToken).ConfigureAwait(false);
+                            var handleJobTask = HandleJobAsync(job);
+
+                            Task.Run(async () =>
+                            {
+                                try
+                                {
+                                    var result = await handleJobTask;
+                                    taskCompletionSource.TrySetResult(result);
+                                }
+                                catch (OperationCanceledException ex)
+                                {
+                                    taskCompletionSource.TrySetCanceled(ex.CancellationToken);
+                                }
+                                catch (Exception ex)
+                                {
+                                    taskCompletionSource.TrySetException(ex);
+                                }
+                            });
                         }
-                        catch (OperationCanceledException) when (job.CancellationToken.IsCancellationRequested)
+                        catch (OperationCanceledException)
                         {
-                            Task.Run(() => job.TaskCompletionSource.TrySetCanceled(job.CancellationToken));
-                            continue;
+                            if (_disposeCancellation.IsCancellationRequested)
+                            {
+                                Task.Run(() =>
+                                    taskCompletionSource.TrySetException(
+                                        new ObjectDisposedException(
+                                            nameof(QueueBasedAsyncPublisherWithBuffer<TResult>))));
+
+                                // Rethrow exception in order to gracefully stop reader loop
+                                throw;
+                            }
+
+                            Task.Run(() => taskCompletionSource.TrySetCanceled(cancellationToken));
+                        }
+                        catch (Exception ex)
+                        {
+                            Task.Run(() => taskCompletionSource.TrySetException(ex));
                         }
                     }
 
-                    HandleNextJob(job);
+                    await _queueReadyEvent.WaitAsync(_disposeCancellation.Token).ConfigureAwait(false);
                 }
-
-                await _queueReadyEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-        }
-
-        private void HandleNextJob(Job job)
-        {
-            if (_disposeCancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (_disposeCancellation.IsCancellationRequested)
             {
-                Task.Run(() =>
-                    job.TaskCompletionSource.SetException(
-                        new ObjectDisposedException(nameof(QueueBasedAsyncPublisherWithBuffer<TResult>))));
-                return;
-            }
-
-            if (job.CancellationToken.IsCancellationRequested)
-            {
-                Task.Run(() => job.TaskCompletionSource.TrySetCanceled());
-                return;
-            }
-
-            Console.WriteLine($" >> Starting next job {job.Body.Length}");
-            Task<TResult> innerTask;
-            try
-            {
-                UpdateState(1, job.Body.Length);
-                innerTask = _decorated.PublishAsync(job.Exchange, job.RoutingKey, job.Body, job.Properties,
-                    job.CancellationToken);
+                // Reader loop gracefully stopped
             }
             catch (Exception ex)
             {
-                // TODO: ? diagnostics
-                Task.Run(() => job.TaskCompletionSource.TrySetException(ex));
+                // TODO: Log unexpected error
+                Console.WriteLine(ex);
+            }
+        }
+
+        private async Task<TResult> HandleJobAsync(Job job)
+        {
+            _disposeCancellation.Token.ThrowIfCancellationRequested();
+            job.CancellationToken.ThrowIfCancellationRequested();
+
+            // Console.WriteLine($" >> Starting next job {job.Body.Length}");
+
+            try
+            {
+                UpdateState(1, job.Body.Length);
+                return await _decorated.PublishAsync(job.Exchange, job.RoutingKey, job.Body, job.Properties,
+                    job.CancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
                 UpdateState(-1, -job.Body.Length);
-                return;
+            }
+        }
+
+        private Task WaitForGateAsync(CancellationToken cancellationToken)
+        {
+            if (_disposeCancellation.IsCancellationRequested)
+            {
+                return Task.FromCanceled(_disposeCancellation.Token);
             }
 
-            Complete();
-
-            async void Complete()
+            if (!cancellationToken.CanBeCanceled)
             {
-                TResult result;
-                try
-                {
-                    result = await innerTask;
-                    Console.WriteLine($" >> Job {job.Body.Length} finished");
-                }
-                catch (Exception ex)
-                {
-                    Task.Run(() => job.TaskCompletionSource.TrySetException(ex));
-                    return;
-                }
-                finally
-                {
-                    UpdateState(-1, -job.Body.Length);
-                }
+                return _gateEvent.WaitAsync(_disposeCancellation.Token);
+            }
 
-                Task.Run(() => job.TaskCompletionSource.TrySetResult(result));
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled(cancellationToken);
+            }
+
+            using (var combinedSource =
+                CancellationTokenSource.CreateLinkedTokenSource(_disposeCancellation.Token, cancellationToken))
+            {
+                return _gateEvent.WaitAsync(combinedSource.Token);
             }
         }
 
@@ -149,24 +176,34 @@ namespace RabbitMqAsyncPublisher
                 _processingBytes += deltaBytes;
 
                 if (_processingMessages < _processingMessagesLimit
-                    && _processingBytes < _processingBytesSoftLimit
-                    && !_disposeCancellation.IsCancellationRequested)
+                    && _processingBytes < _processingBytesSoftLimit)
                 {
-                    Console.WriteLine(" >> Opening gate");
+                    // Console.WriteLine(" >> Opening gate");
                     _gateEvent.Set();
                 }
                 else
                 {
-                    Console.WriteLine(" >> Closing gate");
+                    // Console.WriteLine(" >> Closing gate");
                     _gateEvent.Reset();
                 }
             }
         }
 
-        public async Task<TResult> PublishAsync(
+        public Task<TResult> PublishAsync(
             string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties,
             CancellationToken cancellationToken)
         {
+            if (_disposeCancellation.IsCancellationRequested)
+            {
+                return Task.FromException<TResult>(
+                    new ObjectDisposedException(nameof(QueueBasedAsyncPublisherWithBuffer<TResult>)));
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return Task.FromCanceled<TResult>(cancellationToken);
+            }
+
             var job = new Job
             {
                 Exchange = exchange,
@@ -178,9 +215,9 @@ namespace RabbitMqAsyncPublisher
             };
 
             _jobQueue.Enqueue(job);
-            // TODO: do we need to await here?
-            await _queueReadyEvent.SetAsync().ConfigureAwait(false);
-            return await job.TaskCompletionSource.Task.ConfigureAwait(false);
+            _queueReadyEvent.Set();
+
+            return job.TaskCompletionSource.Task;
         }
 
         public void Dispose()

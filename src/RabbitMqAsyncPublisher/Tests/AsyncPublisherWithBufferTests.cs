@@ -12,6 +12,63 @@ using static Tests.TestUtils;
 namespace Tests
 {
     [TestFixture]
+    public class Foo
+    {
+        [Test]
+        public async Task Bar()
+        {
+            var source1 = new CancellationTokenSource();
+            var source2 = new CancellationTokenSource();
+            var combinedSource = CancellationTokenSource.CreateLinkedTokenSource(source1.Token, source2.Token);
+
+            Task.Run(async () =>
+            {
+                await Task.Delay(1000);
+                source1.Cancel();
+            });
+
+            try
+            {
+                await Task.Delay(-1, combinedSource.Token);
+            }
+            catch (OperationCanceledException ex)
+            {
+                Console.WriteLine(ex.CancellationToken == source1.Token);
+                Console.WriteLine(ex.CancellationToken == source2.Token);
+                Console.WriteLine(ex.CancellationToken == combinedSource.Token);
+            }
+        }
+
+        [Test]
+        public async Task Baz()
+        {
+            // var source = new CancellationTokenSource(1000);
+            var task = Task.Run(() => Outer(default));
+
+            await task;
+            await Task.WhenAny(task);
+
+            Console.WriteLine(task.Status);
+
+            async Task Outer(CancellationToken cancellationToken)
+            {
+                await Task.WhenAll(
+                    Task.Delay(3000, cancellationToken),
+                    Inner(cancellationToken)
+                );
+            }
+
+            async Task Inner(CancellationToken cancellationToken)
+            {
+                // await Task.Delay(1000);
+                // throw new TaskCanceledException();
+                var source = new CancellationTokenSource(1000);
+                await Task.Delay(-1, source.Token);
+            }
+        }
+    }
+
+    [TestFixture]
     public abstract class AsyncPublisherWithBufferTestsBase
     {
         [OneTimeSetUp]
@@ -174,6 +231,8 @@ namespace Tests
 
                 var innerPublisherCancelled = TestPublish(publisher);
 
+                await SpinWaitFor(() => sources.Count == 1);
+
                 var cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(rootCancellationToken);
                 var eventuallyCancelled = TestPublish(publisher, cancellationToken: cancellationTokenSource.Token);
 
@@ -190,8 +249,6 @@ namespace Tests
 
                 immediatelyCancelled.IsCompleted.ShouldBeTrue();
                 immediatelyCancelled.IsCanceled.ShouldBeTrue();
-
-                await SpinWaitFor(() => sources.Count == 1);
 
                 await DequeueAndSetCanceledAsync(sources);
 
@@ -237,7 +294,8 @@ namespace Tests
         }
 
         [Test]
-        [TestCase(1000, 123)]
+        [TestCase(10000, 12345)]
+        [TestCase(10000, 54321)]
         public async Task RandomTest(int messageCount, int seed)
         {
             var random = new Random(seed);

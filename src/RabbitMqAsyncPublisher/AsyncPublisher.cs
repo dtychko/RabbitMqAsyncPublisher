@@ -44,7 +44,7 @@ namespace RabbitMqAsyncPublisher
             {
                 throw new ArgumentException("Channel should be in confirm mode.");
             }
-            
+
             Model = model;
             _diagnostics = diagnostics ?? AsyncPublisherEmptyDiagnostics.NoDiagnostics;
 
@@ -62,7 +62,7 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackAckTaskEnqueued,
                 new AckArgs(e.DeliveryTag, e.Multiple, true),
                 new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _ackEvent.SetAsync();
+            _ackEvent.Set();
         }
 
         private void OnBasicNacks(object sender, BasicNackEventArgs e)
@@ -71,7 +71,7 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackAckTaskEnqueued,
                 new AckArgs(e.DeliveryTag, e.Multiple, false),
                 new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _ackEvent.SetAsync();
+            _ackEvent.Set();
         }
 
         private async void StartPublishLoop()
@@ -274,7 +274,7 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackPublishTaskEnqueued,
                 new PublishArgs(exchange, routingKey, body, properties),
                 new AsyncPublisherStatus(_publishQueueSize, _ackQueueSize, _completionSourceRegistrySize));
-            _publishEvent.SetAsync();
+            _publishEvent.Set();
 
             return taskCompletionSource.Task;
         }
@@ -301,7 +301,9 @@ namespace RabbitMqAsyncPublisher
             Model.BasicAcks -= OnBasicAcks;
             Model.BasicNacks -= OnBasicNacks;
 
-            Task.WaitAll(_publishEvent.SetAsync(), _ackEvent.SetAsync(), _publishLoop, _ackLoop);
+            _publishEvent.Set();
+            _ackEvent.Set();
+            Task.WaitAll(_publishLoop, _ackLoop);
 
             foreach (var source in RemoveAllTaskCompletionSourcesUpTo(ulong.MaxValue))
             {
