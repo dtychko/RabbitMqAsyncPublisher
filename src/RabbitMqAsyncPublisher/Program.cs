@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        public static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
+        public static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5672/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 2000;

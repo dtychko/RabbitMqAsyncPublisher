@@ -191,12 +191,10 @@ namespace RabbitMqAsyncPublisher
                 if (_processingMessages < _processingMessagesLimit
                     && _processingBytes < _processingBytesSoftLimit)
                 {
-                    // Console.WriteLine(" >> Opening gate");
                     _gateEvent.Set();
                 }
                 else
                 {
-                    // Console.WriteLine(" >> Closing gate");
                     _gateEvent.Reset();
                 }
             }
@@ -237,7 +235,7 @@ namespace RabbitMqAsyncPublisher
             return WaitForPublishCompletedOrCancelled(job, tryCancelJob, cancellationToken);
         }
 
-        private static async Task<TResult> WaitForPublishCompletedOrCancelled(Job job, Func<bool> tryCancelJob,
+        private async Task<TResult> WaitForPublishCompletedOrCancelled(Job job, Func<bool> tryCancelJob,
             CancellationToken cancellationToken)
         {
             var jobTask = job.TaskCompletionSource.Task;
@@ -248,6 +246,8 @@ namespace RabbitMqAsyncPublisher
 
             if (firstCompletedTask != jobTask && tryCancelJob())
             {
+                TrackSafe(_diagnostics.TrackJobCancelled,
+                    new PublishArgs(job.Exchange, job.RoutingKey, job.Body, job.Properties), TimeSpan.Zero);
                 return await Task.FromCanceled<TResult>(cancellationToken).ConfigureAwait(false);
             }
 

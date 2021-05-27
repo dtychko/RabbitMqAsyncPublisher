@@ -21,19 +21,33 @@ namespace RabbitMqAsyncPublisher
                 //RequestedHeartbeat = TimeSpan.Zero
             };
             using (var publishConnection = connectionFactory.CreateConnection("test-publish-connection"))
-            using (var consumeConnection = connectionFactory.CreateConnection("test-consume-connection"))
-            using (var publishModel = publishConnection.CreateModel())
-            using (var consumeModel = consumeConnection.CreateModel())
+            // using (var consumeConnection = connectionFactory.CreateConnection("test-consume-connection"))
+            using (var publishModel1 = publishConnection.CreateModel())
+            // using (var publishModel2 = publishConnection.CreateModel())
+            using (var consumeModel = publishConnection.CreateModel())
             {
-                publishModel.ConfirmSelect();
-                consumeModel.ConfirmSelect();
-                //consumeModel.QueueDeclare(QueueName, true, false, false);
+                publishModel1.ConfirmSelect();
+                // publishModel2.ConfirmSelect();
+                // consumeModel.ConfirmSelect();
+                // consumeModel.QueueDeclare(QueueName, true, false, false);
 
-                var publishTask = Publish(publishModel);
-                
+                Task.Run(async () =>
+                {
+                    await Task.Delay(3_000);
+                    consumeModel.Dispose();
+                    publishModel1.Dispose();
+                    // publishModel2.Dispose();
+                    publishConnection.Dispose();
+                    // consumeConnection.Dispose();
+                });
+
+                var publishTask1 = Publish(publishModel1);
+                // var publishTask2 = Publish(publishModel2);
+
                 await Consume(consumeModel);
 
-                await publishTask;
+                await publishTask1;
+                // await publishTask2;
 
                 await Task.Delay(3_000);
                 //await consumerTask;
@@ -44,7 +58,7 @@ namespace RabbitMqAsyncPublisher
         private static async Task Publish(IModel publishModel)
         {
             publishModel.QueuePurge(QueueName);
-            
+
             await Task.Run(async () =>
             {
                 using (var publisher = new AsyncPublisher(publishModel))
@@ -58,12 +72,12 @@ namespace RabbitMqAsyncPublisher
 
                     async Task Publish(int counter, int size)
                     {
-                        Console.WriteLine($" >> {DateTime.Now:O} Starting publish #{counter}");
+                        // Console.WriteLine($" >> {DateTime.Now:O} Starting publish #{counter}");
                         var basicProperties = publishModel.CreateBasicProperties();
                         basicProperties.Headers = new Dictionary<string, object> {["X-Counter"] = counter};
                         var task = publisher.PublishAsync(
                             "", QueueName, new ReadOnlyMemory<byte>(new byte[size]), basicProperties, default);
-                        Console.WriteLine($" >> {DateTime.Now:O} Finished sync part of publishing #{counter}");
+                        // Console.WriteLine($" >> {DateTime.Now:O} Finished sync part of publishing #{counter}");
                         await task.ConfigureAwait(false);
                         Console.WriteLine($" >> {DateTime.Now:O} Finished publishing #{counter}");
                     }
@@ -89,7 +103,7 @@ namespace RabbitMqAsyncPublisher
                     await Task.WhenAll(tasks);
                 }
             });
-            
+
             Console.WriteLine(" >> Finished publishing all");
         }
 
@@ -104,9 +118,9 @@ namespace RabbitMqAsyncPublisher
                 {
                     try
                     {
-                        Console.WriteLine(" >> Received message");
+                        // Console.WriteLine(" >> Received message");
                         var receivedNumber = int.Parse(receiveArgs.BasicProperties.Headers["X-Counter"].ToString());
-                        Console.WriteLine($" >> Received header {receivedNumber}");
+                        // Console.WriteLine($" >> Received header {receivedNumber}");
 
                         if (receivedNumber < lastSeenNumber)
                         {
@@ -116,7 +130,7 @@ namespace RabbitMqAsyncPublisher
                         lastSeenNumber = receivedNumber;
                         consumeModel.BasicAck(receiveArgs.DeliveryTag, false);
 
-                        Console.WriteLine(" >> Finished receive handler");
+                        Console.WriteLine($" >> Finished receive handler {receivedNumber}");
                     }
                     catch (Exception ex)
                     {
