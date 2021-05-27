@@ -12,64 +12,7 @@ using static Tests.TestUtils;
 namespace Tests
 {
     [TestFixture]
-    public class Foo
-    {
-        [Test]
-        public async Task Bar()
-        {
-            var source1 = new CancellationTokenSource();
-            var source2 = new CancellationTokenSource();
-            var combinedSource = CancellationTokenSource.CreateLinkedTokenSource(source1.Token, source2.Token);
-
-            Task.Run(async () =>
-            {
-                await Task.Delay(1000);
-                source1.Cancel();
-            });
-
-            try
-            {
-                await Task.Delay(-1, combinedSource.Token);
-            }
-            catch (OperationCanceledException ex)
-            {
-                Console.WriteLine(ex.CancellationToken == source1.Token);
-                Console.WriteLine(ex.CancellationToken == source2.Token);
-                Console.WriteLine(ex.CancellationToken == combinedSource.Token);
-            }
-        }
-
-        [Test]
-        public async Task Baz()
-        {
-            // var source = new CancellationTokenSource(1000);
-            var task = Task.Run(() => Outer(default));
-
-            await task;
-            await Task.WhenAny(task);
-
-            Console.WriteLine(task.Status);
-
-            async Task Outer(CancellationToken cancellationToken)
-            {
-                await Task.WhenAll(
-                    Task.Delay(3000, cancellationToken),
-                    Inner(cancellationToken)
-                );
-            }
-
-            async Task Inner(CancellationToken cancellationToken)
-            {
-                // await Task.Delay(1000);
-                // throw new TaskCanceledException();
-                var source = new CancellationTokenSource(1000);
-                await Task.Delay(-1, source.Token);
-            }
-        }
-    }
-
-    [TestFixture]
-    public abstract class AsyncPublisherWithBufferTestsBase
+    public class AsyncPublisherWithBufferTestsBase
     {
         [OneTimeSetUp]
         public void SetUp()
@@ -78,10 +21,12 @@ namespace Tests
             ThreadPool.SetMinThreads(100, 10);
         }
 
-        protected abstract IAsyncPublisher<TResult> CreateTarget<TResult>(
-            IAsyncPublisher<TResult> decorated,
+        private static IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
             int processingMessagesLimit = int.MaxValue,
-            int processingBytesLimit = int.MaxValue);
+            int processingBytesLimit = int.MaxValue)
+        {
+            return new AsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit, processingBytesLimit);
+        }
 
         [Test]
         public async Task ShouldReturnOriginalResults()
@@ -285,9 +230,7 @@ namespace Tests
             eventuallyDisposed.IsFaulted.ShouldBeTrue();
             eventuallyDisposed.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
 
-            var immediatelyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[3]));
-            immediatelyDisposed.IsFaulted.ShouldBeTrue();
-            immediatelyDisposed.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
+            Assert.Throws<ObjectDisposedException>(() => TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[3])));
 
             await DequeueAndSetResultAsync(sources, true);
 
@@ -418,29 +361,6 @@ namespace Tests
                 queue.TryDequeue(out var item);
                 item.SetCanceled();
             });
-        }
-    }
-
-    [TestFixture]
-    public class AsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
-    {
-        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
-            int processingMessagesLimit = Int32.MaxValue,
-            int processingBytesLimit = Int32.MaxValue)
-        {
-            return new AsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit, processingBytesLimit);
-        }
-    }
-
-    [TestFixture]
-    public class QueueBasedAsyncPublisherWithBufferTests : AsyncPublisherWithBufferTestsBase
-    {
-        protected override IAsyncPublisher<TResult> CreateTarget<TResult>(IAsyncPublisher<TResult> decorated,
-            int processingMessagesLimit = Int32.MaxValue,
-            int processingBytesLimit = Int32.MaxValue)
-        {
-            return new QueueBasedAsyncPublisherWithBuffer<TResult>(decorated, processingMessagesLimit,
-                processingBytesLimit);
         }
     }
 

@@ -74,11 +74,9 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="AsyncManualResetEvent.cs" />
-        <Compile Include="DisposeAwareCancellation.cs" />
         <Compile Include="IAsyncPublisher.cs" />
         <Compile Include="AsyncPublisherProxy.cs" />
         <Compile Include="AsyncPublisherTaskCompletionSourceRegistry.cs" />
-        <Compile Include="AsyncPublisherWithBuffer.cs" />
         <Compile Include="AsyncPublisherWithRetries.cs" />
         <Compile Include="AutoRecovery.cs" />
         <Compile Include="AutoRecoveryConnectionHealthCheck.cs" />

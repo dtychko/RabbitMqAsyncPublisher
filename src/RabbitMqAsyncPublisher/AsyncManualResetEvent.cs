@@ -31,7 +31,6 @@ namespace RabbitMqAsyncPublisher
                 capturedSource.Task
             ).ConfigureAwait(false);
 
-            Console.WriteLine($"WaitAsync({GetHashCode()}) released {result.Status}");
             await result.ConfigureAwait(false);
             return result == capturedSource.Task;
         }
