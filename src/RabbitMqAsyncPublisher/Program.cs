@@ -57,7 +57,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class Program
     {
-        private static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
+        public static readonly Uri RabbitMqUri = new Uri("amqp://guest:guest@localhost:5678/");
         private const string QueueName = "test_queue";
 
         private const int MessageCount = 2000;
@@ -67,7 +67,7 @@ namespace RabbitMqAsyncPublisher
 
         private static int _counter;
 
-        public static void Main()
+        public static void Main2()
         {
             ThreadPool.SetMaxThreads(100, 100);
             ThreadPool.SetMinThreads(100, 100);

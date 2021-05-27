@@ -74,6 +74,7 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="AsyncManualResetEvent.cs" />
+        <Compile Include="BrokerOrderingTest.cs" />
         <Compile Include="IAsyncPublisher.cs" />
         <Compile Include="AsyncPublisherProxy.cs" />
         <Compile Include="AsyncPublisherTaskCompletionSourceRegistry.cs" />
