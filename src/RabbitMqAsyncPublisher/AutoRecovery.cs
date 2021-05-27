@@ -103,7 +103,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        internal AutoRecovery(
+        private AutoRecovery(
             Func<TResource> createResource,
             IReadOnlyList<Func<TResource, IDisposable>> componentFactories,
             Func<int, CancellationToken, Task> reconnectDelay,
@@ -146,6 +146,7 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException)
             {
+                // TODO: do we need to check cancellation token in exception here?
                 // Ignore
             }
             catch (Exception ex)

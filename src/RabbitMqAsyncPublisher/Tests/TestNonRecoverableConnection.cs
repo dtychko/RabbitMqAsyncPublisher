@@ -27,6 +27,11 @@ namespace Tests
 
         public void ImitateClose(ShutdownEventArgs args)
         {
+            if (CloseReason != null)
+            {
+                return;
+            }
+            
             CloseReason = args;
             ConnectionShutdown?.Invoke(this, args);
             foreach (var model in CreatedModels)
@@ -37,14 +42,37 @@ namespace Tests
 
         public event EventHandler<ShutdownEventArgs> ConnectionShutdown;
 
-        int INetworkConnection.LocalPort => throw new NotImplementedException();
-
-        int INetworkConnection.RemotePort => throw new NotImplementedException();
-
         void IDisposable.Dispose()
         {
         }
 
+        void IConnection.Close()
+        {
+            ImitateClose(new ShutdownEventArgs(ShutdownInitiator.Application, 200, "Closed via interface call"));
+        }
+
+        void IConnection.Close(ushort reasonCode, string reasonText)
+        {
+            ImitateClose(new ShutdownEventArgs(ShutdownInitiator.Application, reasonCode, reasonText));
+        }
+
+        void IConnection.Close(TimeSpan timeout)
+        {
+            IConnection c = this;
+            c.Close();
+        }
+
+        void IConnection.Close(ushort reasonCode, string reasonText, TimeSpan timeout)
+        {
+            IConnection c = this;
+            c.Close(reasonCode, reasonText);
+        }
+
+        #region Unused in tests
+        int INetworkConnection.LocalPort => throw new NotImplementedException();
+
+        int INetworkConnection.RemotePort => throw new NotImplementedException();
+        
         void IConnection.UpdateSecret(string newSecret, string reason) => throw new NotImplementedException();
 
         void IConnection.Abort() => throw new NotImplementedException();
@@ -54,14 +82,6 @@ namespace Tests
         void IConnection.Abort(TimeSpan timeout) => throw new NotImplementedException();
 
         void IConnection.Abort(ushort reasonCode, string reasonText, TimeSpan timeout) => throw new NotImplementedException();
-
-        void IConnection.Close() => throw new NotImplementedException();
-
-        void IConnection.Close(ushort reasonCode, string reasonText) => throw new NotImplementedException();
-
-        void IConnection.Close(TimeSpan timeout) => throw new NotImplementedException();
-
-        void IConnection.Close(ushort reasonCode, string reasonText, TimeSpan timeout) => throw new NotImplementedException();
 
         void IConnection.HandleConnectionBlocked(string reason) => throw new NotImplementedException();
 
@@ -106,5 +126,6 @@ namespace Tests
             add => throw new NotImplementedException();
             remove => throw new NotImplementedException();
         }
+        #endregion
     }
 }

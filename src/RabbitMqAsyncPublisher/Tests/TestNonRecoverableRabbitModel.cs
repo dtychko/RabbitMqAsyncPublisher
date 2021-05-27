@@ -8,6 +8,13 @@ using RabbitMQ.Client.Exceptions;
 
 namespace Tests
 {
+    internal class PublishRequest
+    {
+        public IBasicProperties Properties { get; set; }
+        public ReadOnlyMemory<byte> Body { get; set; }
+        public ulong DeliveryTag { get; set; }
+    }
+    
     internal class TestNonRecoverableRabbitModel : IModel
     {
         private readonly Func<PublishRequest, Task<bool>> _handlePublish;
