@@ -17,22 +17,6 @@ namespace RabbitMqAsyncPublisher
         void TrackRetryDelay(PublishUnsafeAttemptArgs args, TimeSpan delay);
     }
 
-    public readonly struct PublishArgs
-    {
-        public readonly string Exchange;
-        public readonly string RoutingKey;
-        public readonly ReadOnlyMemory<byte> Body;
-        public readonly IBasicProperties Properties;
-
-        public PublishArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties)
-        {
-            Exchange = exchange;
-            RoutingKey = routingKey;
-            Body = body;
-            Properties = properties;
-        }
-    }
-
     public readonly struct PublishUnsafeArgs
     {
         public readonly string Exchange;

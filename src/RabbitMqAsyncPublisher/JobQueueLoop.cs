@@ -20,11 +20,11 @@ namespace RabbitMqAsyncPublisher
 
         public int QueueSize => _jobQueue.Size;
 
-        public JobQueueLoop(Action<Func<TJob>, Func<bool>> handleJob,
+        public JobQueueLoop(Action<Func<TJob>, CancellationToken> handleJob,
             IUnexpectedExceptionDiagnostics diagnostics)
             : this((dequeue, stopToken) =>
             {
-                handleJob(dequeue, () => stopToken.IsCancellationRequested);
+                handleJob(dequeue, stopToken);
                 return Task.CompletedTask;
             }, diagnostics)
         {

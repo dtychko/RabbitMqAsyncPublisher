@@ -20,8 +20,20 @@ namespace RabbitMqAsyncPublisher
         void TrackDisposeStarted(AsyncPublisherWithBufferStatus status);
 
         void TrackDisposeSucceeded(AsyncPublisherWithBufferStatus status, TimeSpan duration);
+    }
 
-        void TrackReaderLoopIterationStarted(AsyncPublisherWithBufferStatus status);
+    public readonly struct AsyncPublisherWithBufferStatus
+    {
+        public readonly int JobQueueSize;
+        public readonly int ProcessingMessages;
+        public readonly int ProcessingBytes;
+
+        public AsyncPublisherWithBufferStatus(int jobQueueSize, int processingMessages, int processingBytes)
+        {
+            JobQueueSize = jobQueueSize;
+            ProcessingMessages = processingMessages;
+            ProcessingBytes = processingBytes;
+        }
     }
 
     public class AsyncPublisherWithBufferDiagnostics : IAsyncPublisherWithBufferDiagnostics
@@ -76,20 +88,6 @@ namespace RabbitMqAsyncPublisher
 
         public virtual void TrackReaderLoopIterationStarted(AsyncPublisherWithBufferStatus status)
         {
-        }
-    }
-
-    public readonly struct AsyncPublisherWithBufferStatus
-    {
-        public readonly int JobQueueSize;
-        public readonly int ProcessingMessages;
-        public readonly int ProcessingBytes;
-
-        public AsyncPublisherWithBufferStatus(int jobQueueSize, int processingMessages, int processingBytes)
-        {
-            JobQueueSize = jobQueueSize;
-            ProcessingMessages = processingMessages;
-            ProcessingBytes = processingBytes;
         }
     }
 }

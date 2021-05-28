@@ -40,21 +40,8 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(PublishQueueSize)}: {PublishQueueSize}, {nameof(AckQueueSize)}: {AckQueueSize}, {nameof(CompletionSourceRegistrySize)}: {CompletionSourceRegistrySize}";
-        }
-    }
-
-    public class AckArgs
-    {
-        public ulong DeliveryTag { get; }
-        public bool Multiple { get; }
-        public bool Ack { get; }
-
-        public AckArgs(ulong deliveryTag, bool multiple, bool ack)
-        {
-            DeliveryTag = deliveryTag;
-            Multiple = multiple;
-            Ack = ack;
+            return
+                $"{nameof(PublishQueueSize)}: {PublishQueueSize}, {nameof(AckQueueSize)}: {AckQueueSize}, {nameof(CompletionSourceRegistrySize)}: {CompletionSourceRegistrySize}";
         }
     }
 
@@ -137,7 +124,8 @@ namespace RabbitMqAsyncPublisher
 
         public void TrackPublishFailed(PublishArgs publishArgs, ulong deliveryTag, TimeSpan duration, Exception ex)
         {
-            Console.WriteLine($" >> {nameof(TrackPublishFailed)}: {deliveryTag} in {duration.TotalMilliseconds}ms {ex}");
+            Console.WriteLine(
+                $" >> {nameof(TrackPublishFailed)}: {deliveryTag} in {duration.TotalMilliseconds}ms {ex}");
         }
 
         public void TrackAckJobEnqueued(AckArgs ackArgs, AsyncPublisherStatus status)
@@ -152,7 +140,8 @@ namespace RabbitMqAsyncPublisher
 
         public void TrackAckSucceeded(AckArgs ackArgs, TimeSpan duration)
         {
-            Console.WriteLine($" >> {nameof(TrackAckSucceeded)}: {ackArgs.DeliveryTag} in {duration.TotalMilliseconds}ms");
+            Console.WriteLine(
+                $" >> {nameof(TrackAckSucceeded)}: {ackArgs.DeliveryTag} in {duration.TotalMilliseconds}ms");
         }
 
         public void TrackDisposeStarted()
@@ -162,7 +151,8 @@ namespace RabbitMqAsyncPublisher
 
         public void TrackDisposeSucceeded(TimeSpan duration)
         {
-            Console.WriteLine($" >> {nameof(AsyncPublisher)}/{nameof(TrackDisposeSucceeded)} in {duration.TotalMilliseconds}");
+            Console.WriteLine(
+                $" >> {nameof(AsyncPublisher)}/{nameof(TrackDisposeSucceeded)} in {duration.TotalMilliseconds}");
         }
 
         public void TrackStatus(AsyncPublisherStatus status)
