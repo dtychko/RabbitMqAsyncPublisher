@@ -51,7 +51,7 @@ namespace RabbitMqAsyncPublisher
             _publishLoop = new JobQueueLoop<PublishJob>(HandlePublishJobAsync, _diagnostics);
         }
 
-        private async Task HandlePublishJobAsync(Func<PublishJob> dequeueJob, CancellationToken _)
+        private async Task HandlePublishJobAsync(Func<PublishJob> dequeueJob)
         {
             try
             {
@@ -61,9 +61,9 @@ namespace RabbitMqAsyncPublisher
             {
                 var tcs = dequeueJob().TaskCompletionSource;
 #pragma warning disable 4014
+                // ReSharper disable once MethodSupportsCancellation
                 Task.Run(() =>
-                        tcs.SetException(new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>))),
-                    _disposeCancellationToken);
+                    tcs.TrySetException(new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>))));
 #pragma warning restore 4014
                 return;
             }
@@ -235,6 +235,7 @@ namespace RabbitMqAsyncPublisher
 
             _decorated.Dispose();
 
+            Console.WriteLine("_publishLoop.StopAsync().Wait()");
             // ReSharper disable once MethodSupportsCancellation
             _publishLoop.StopAsync().Wait();
 

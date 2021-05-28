@@ -8,7 +8,7 @@ namespace RabbitMqAsyncPublisher
 
     internal class JobQueueLoop<TJob>
     {
-        private readonly Func<Func<TJob>, CancellationToken, Task> _handleJob;
+        private readonly Func<Func<TJob>, Task> _handleJob;
         private readonly IUnexpectedExceptionDiagnostics _diagnostics;
 
         private readonly JobQueue<TJob> _jobQueue = new JobQueue<TJob>();
@@ -20,17 +20,17 @@ namespace RabbitMqAsyncPublisher
 
         public int QueueSize => _jobQueue.Size;
 
-        public JobQueueLoop(Action<Func<TJob>, CancellationToken> handleJob,
+        public JobQueueLoop(Action<Func<TJob>> handleJob,
             IUnexpectedExceptionDiagnostics diagnostics)
-            : this((dequeue, stopToken) =>
+            : this(dequeue =>
             {
-                handleJob(dequeue, stopToken);
+                handleJob(dequeue);
                 return Task.CompletedTask;
             }, diagnostics)
         {
         }
 
-        public JobQueueLoop(Func<Func<TJob>, CancellationToken, Task> handleJob,
+        public JobQueueLoop(Func<Func<TJob>, Task> handleJob,
             IUnexpectedExceptionDiagnostics diagnostics)
         {
             _handleJob = handleJob;
@@ -67,8 +67,7 @@ namespace RabbitMqAsyncPublisher
                     {
                         try
                         {
-                            await _handleJob(() => _jobQueue.DequeueJob(), _stopCancellationToken)
-                                .ConfigureAwait(false);
+                            await _handleJob(() => _jobQueue.DequeueJob()).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException) when (_stopCancellationToken.IsCancellationRequested)
                         {
@@ -77,8 +76,9 @@ namespace RabbitMqAsyncPublisher
                         catch (Exception ex)
                         {
                             TrackSafe(_diagnostics.TrackUnexpectedException,
-                                $"[CRITICAL] Unexpected exception in job queue loop '{typeof(TJob).Name}' iteration", ex);
-                            
+                                $"[CRITICAL] Unexpected exception in job queue loop '{typeof(TJob).Name}' iteration",
+                                ex);
+
                             // Not expected to happen in production, safety measure if it happens for some reason, to avoid burning CPU. 
                             // ReSharper disable once MethodSupportsCancellation
                             await Task.Delay(TimeSpan.FromSeconds(1));
@@ -90,6 +90,7 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException) when (_stopCancellationToken.IsCancellationRequested)
             {
+                Console.WriteLine($"[CRITICAL] Jow queue is not empty: jobQueueSize={_jobQueue.Size}");
                 // Job loop gracefully stopped
             }
             catch (Exception ex)

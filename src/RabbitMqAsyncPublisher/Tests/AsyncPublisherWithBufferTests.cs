@@ -174,6 +174,7 @@ namespace Tests
         }
 
         [Test]
+        [Repeat(10)]
         public async Task ShouldCancel()
         {
             await RunWithTimeout(async rootCancellationToken =>
@@ -216,6 +217,7 @@ namespace Tests
         }
 
         [Test]
+        [Repeat(100)]
         public async Task ShouldDispose()
         {
             var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
@@ -235,6 +237,7 @@ namespace Tests
 
             publisher.Dispose();
 
+            Console.WriteLine("await Task.WhenAny(eventuallyDisposed)");
             await Task.WhenAny(eventuallyDisposed);
             eventuallyDisposed.IsFaulted.ShouldBeTrue();
             eventuallyDisposed.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();

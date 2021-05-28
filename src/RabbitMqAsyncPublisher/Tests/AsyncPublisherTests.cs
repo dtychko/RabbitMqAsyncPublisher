@@ -199,6 +199,7 @@ namespace Tests
         }
 
         [Test]
+        [Repeat(10)]
         public async Task ShouldCancel()
         {
             var events = new ConcurrentQueue<ManualResetEventSlim>();
@@ -244,6 +245,7 @@ namespace Tests
         }
 
         [Test]
+        [Repeat(10)]
         public async Task ShouldNoCancelAfterBasicPublishIsCalled()
         {
             var events = new ConcurrentQueue<ManualResetEventSlim>();
@@ -279,8 +281,11 @@ namespace Tests
         }
 
         [Test]
+        [Repeat(10)]
         public async Task ShouldDispose()
         {
+            Console.WriteLine(" >> ShouldDispose");
+
             var events = new ConcurrentQueue<ManualResetEventSlim>();
             var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
             using (var publisher = CreateTarget(req =>
@@ -299,10 +304,14 @@ namespace Tests
                 var eventuallyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[2]));
                 eventuallyDisposed.IsCompleted.ShouldBeFalse();
 
+                // Should release event, otherwise publisher.Dispose() call will hang
+                Task.Run(() =>
+                {
+                    events.TryDequeue(out var e);
+                    e.Set();
+                });
+                Console.WriteLine("publisher.Dispose()");
                 publisher.Dispose();
-
-                events.TryDequeue(out var e);
-                e.Set();
 
                 Console.WriteLine("await Task.WhenAny(eventuallyDisposed)");
                 await Task.WhenAny(eventuallyDisposed);

@@ -28,8 +28,8 @@ namespace RabbitMqAsyncPublisher
 
             var capturedSource = _taskCompletionSource;
             var result = await Task.WhenAny(
-                Task.Delay(millisecondsTimeout, cancellationToken),
-                capturedSource.Task
+                capturedSource.Task,
+                Task.Delay(millisecondsTimeout, cancellationToken)
             ).ConfigureAwait(false);
 
             await result.ConfigureAwait(false);

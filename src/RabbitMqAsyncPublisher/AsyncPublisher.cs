@@ -65,8 +65,10 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackAckJobEnqueued, ackJob, CreateStatus());
         }
 
-        private void HandlePublishJob(Func<PublishJob> dequeuePublishJob, CancellationToken __)
+        private void HandlePublishJob(Func<PublishJob> dequeuePublishJob)
         {
+            Console.WriteLine(" >> HandlePublishJob");
+            
             var publishJob = dequeuePublishJob();
 
             if (_disposeCancellationToken.IsCancellationRequested)
@@ -111,7 +113,7 @@ namespace RabbitMqAsyncPublisher
                     Task.Run(() => publishJob.TaskCompletionSource.TrySetCanceled(publishJob.CancellationToken));
                     return;
                 }
-                
+
                 _completionSourceRegistry.Register(seqNo, publishJob.TaskCompletionSource);
 
                 _model.BasicPublish(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
@@ -129,10 +131,7 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackPublishSucceeded, publishJob.Args, seqNo, stopwatch.Elapsed);
         }
 
-        private void HandleAckJob(
-            Func<AckArgs> dequeueAckJob,
-            // Job queue loop cancellation token is ignored because we expect all ACK handling to be fast
-            CancellationToken _)
+        private void HandleAckJob(Func<AckArgs> dequeueAckJob)
         {
             var ackJob = dequeueAckJob();
 
@@ -230,7 +229,9 @@ namespace RabbitMqAsyncPublisher
             _model.BasicNacks -= OnBasicNacks;
 
             // ReSharper disable MethodSupportsCancellation
+            Console.WriteLine("_publishLoop.StopAsync().Wait()");
             _publishLoop.StopAsync().Wait();
+            Console.WriteLine("_ackLoop.StopAsync().Wait()");
             _ackLoop.StopAsync().Wait();
             // ReSharper restore MethodSupportsCancellation
 
