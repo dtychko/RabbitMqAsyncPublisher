@@ -166,9 +166,8 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackAckJobCompleted, ackJob, CreateStatus(), stopwatch.Elapsed);
         }
 
-        public Task<bool> PublishAsync(
-            string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties,
-            CancellationToken cancellationToken)
+        public Task<bool> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+            IBasicProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {
@@ -181,7 +180,7 @@ namespace RabbitMqAsyncPublisher
             }
 
             return PublishAsyncCore(
-                new PublishArgs(exchange, routingKey, body, properties), cancellationToken,
+                new PublishArgs(exchange, routingKey, body, properties, correlationId), cancellationToken,
                 _diagnostics, _publishLoop, CreateStatus);
         }
 
@@ -258,14 +257,18 @@ namespace RabbitMqAsyncPublisher
         public string RoutingKey { get; }
         public ReadOnlyMemory<byte> Body { get; }
         public IBasicProperties Properties { get; }
+        public string CorrelationId { get; }
+        public DateTimeOffset StartedAt { get; }
 
         public PublishArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body,
-            IBasicProperties properties)
+            IBasicProperties properties, string correlationId)
         {
             Exchange = exchange;
             RoutingKey = routingKey;
             Body = body;
             Properties = properties;
+            CorrelationId = correlationId ?? Guid.NewGuid().ToString("D");
+            StartedAt = DateTimeOffset.UtcNow;
         }
 
         public override string ToString()
@@ -273,7 +276,9 @@ namespace RabbitMqAsyncPublisher
             return $"{nameof(Exchange)}: {Exchange}; " +
                    $"{nameof(RoutingKey)}: {RoutingKey}; " +
                    $"{nameof(Body)}.{nameof(Body.Length)}: {Body.Length}; " +
-                   $"{nameof(Properties)}: {Properties}";
+                   $"{nameof(Properties)}: {Properties}; " +
+                   $"{nameof(CorrelationId)}: {CorrelationId}; " +
+                   $"{nameof(StartedAt)}: {StartedAt}";
         }
     }
 

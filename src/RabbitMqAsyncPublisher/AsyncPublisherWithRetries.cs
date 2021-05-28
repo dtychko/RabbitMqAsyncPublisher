@@ -36,33 +36,31 @@ namespace RabbitMqAsyncPublisher
             _diagnostics = diagnostics;
         }
 
-        public async Task<RetryingPublisherResult> PublishAsync(
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
-            CancellationToken cancellationToken)
+        public async Task<RetryingPublisherResult> PublishAsync(string exchange, string routingKey,
+            ReadOnlyMemory<byte> body, IBasicProperties properties, string correlationId = null,
+            CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
 
             if (!_canPublish.IsSet)
             {
-                _diagnostics.TrackCanPublishWait(new PublishArgs(exchange, routingKey, body,
-                    properties));
+                _diagnostics.TrackCanPublishWait(new PublishArgs(exchange, routingKey, body, properties,
+                    correlationId));
             }
 
             _canPublish.Wait(cancellationToken);
 
             using (StartPublishing(out var queueNode))
             {
-                if (await TryPublishAsync(1, exchange, routingKey, body, properties, cancellationToken)
+                if (await TryPublishAsync(1, exchange, routingKey, body, properties, correlationId, cancellationToken)
                     .ConfigureAwait(false))
                 {
                     return RetryingPublisherResult.NoRetries;
                 }
 
                 _canPublish.Reset();
-                return await RetryAsync(queueNode, exchange, routingKey, body, properties, cancellationToken)
+                return await RetryAsync(queueNode, exchange, routingKey, body, properties, correlationId,
+                        cancellationToken)
                     .ConfigureAwait(false);
             }
         }
@@ -92,6 +90,7 @@ namespace RabbitMqAsyncPublisher
             string routingKey,
             ReadOnlyMemory<byte> body,
             IBasicProperties properties,
+            string correlationId,
             CancellationToken cancellationToken)
         {
             LinkedListNode<QueueEntry> nextQueueNode;
@@ -117,7 +116,9 @@ namespace RabbitMqAsyncPublisher
 
                 await Task.Delay(_retryDelay, cancellationToken).ConfigureAwait(false);
 
-                if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, cancellationToken).ConfigureAwait(false))
+                if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, correlationId,
+                        cancellationToken)
+                    .ConfigureAwait(false))
                 {
                     return new RetryingPublisherResult(attempt - 1);
                 }
@@ -130,6 +131,7 @@ namespace RabbitMqAsyncPublisher
             string routingKey,
             ReadOnlyMemory<byte> body,
             IBasicProperties properties,
+            string correlationId,
             CancellationToken cancellationToken)
         {
             var args = new PublishUnsafeAttemptArgs(exchange, routingKey, body, properties, attempt);
@@ -139,7 +141,7 @@ namespace RabbitMqAsyncPublisher
             try
             {
                 var acknowledged = await _decorated
-                    .PublishAsync(exchange, routingKey, body, properties, cancellationToken)
+                    .PublishAsync(exchange, routingKey, body, properties, correlationId, cancellationToken)
                     .ConfigureAwait(false);
                 _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
                 return acknowledged;

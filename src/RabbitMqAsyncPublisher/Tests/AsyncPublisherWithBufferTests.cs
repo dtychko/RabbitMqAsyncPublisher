@@ -342,7 +342,7 @@ namespace Tests
         private static Task<T> TestPublish<T>(IAsyncPublisher<T> publisher,
             ReadOnlyMemory<byte> body = default, CancellationToken cancellationToken = default)
         {
-            return publisher.PublishAsync(string.Empty, string.Empty, body, default, cancellationToken);
+            return publisher.PublishAsync(string.Empty, string.Empty, body, default, default, cancellationToken);
         }
 
         private static Task DequeueAndSetResultAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, T result)
@@ -390,7 +390,8 @@ namespace Tests
 
         public Task<TResult> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
             IBasicProperties properties,
-            CancellationToken cancellationToken)
+            string correlationId = null,
+            CancellationToken cancellationToken = default)
         {
             if (_isDisposed)
             {

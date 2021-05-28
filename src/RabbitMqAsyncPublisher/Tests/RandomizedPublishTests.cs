@@ -86,7 +86,8 @@ namespace Tests
                                     var body = Encoding.UTF8.GetBytes(messageTag);
                                     var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
                                     var task = retryingPublisher.PublishAsync(
-                                        "test-exchange", "no-routing", body, testBasicProperties, cancellationToken);
+                                        "test-exchange", "no-routing", body, testBasicProperties, default,
+                                        cancellationToken);
                                     publishTaskDescriptors.Add(
                                         new PublishTask
                                             {Task = task, MessageIndex = messageIndex, MessageTag = messageTag});
@@ -104,7 +105,6 @@ namespace Tests
                             new AsyncPublisher(model);
                         return publisherProxy.ConnectTo(innerPublisher);
                     }
-                    
                 }
 
                 var publishCalls = createdModels.SelectMany(x => x.PublishCalls).ToList();
@@ -118,7 +118,7 @@ namespace Tests
                 AssertRetriesAreOrdered(publishTaskDescriptors);
                 AssertAllPublishesAreAcked(createdModels.SelectMany(x => x.SuccessfullyCompletedPublishes).ToList(),
                     publishTaskDescriptors);
-                
+
                 IDisposable ImitateShutdownBound(IConnection connection)
                 {
                     return ImitateConnectionShutdown(

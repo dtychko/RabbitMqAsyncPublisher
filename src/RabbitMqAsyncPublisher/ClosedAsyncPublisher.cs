@@ -15,9 +15,12 @@ namespace RabbitMqAsyncPublisher
             _closeReason = closeReason;
         }
 
-        public Task<TResult> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+        public Task<TResult> PublishAsync(string exchange,
+            string routingKey,
+            ReadOnlyMemory<byte> body,
             IBasicProperties properties,
-            CancellationToken cancellationToken)
+            string correlationId = null,
+            CancellationToken cancellationToken = default)
         {
             throw new AlreadyClosedException(_closeReason);
         }

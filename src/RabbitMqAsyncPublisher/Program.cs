@@ -184,8 +184,7 @@ namespace RabbitMqAsyncPublisher
                                 "",
                                 QueueName,
                                 Encoding.UTF8.GetBytes(Utils.GenerateString(1024)),
-                                properties,
-                                CancellationToken.None)
+                                properties)
                             .Wait();
                         Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Published#{i}");
                     }
@@ -332,7 +331,7 @@ namespace RabbitMqAsyncPublisher
 
         public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, IBasicProperties properties)
         {
-            return _publisher.PublishAsync(_exchange, _queueName, message, properties, CancellationToken.None);
+            return _publisher.PublishAsync(_exchange, _queueName, message, properties);
         }
     }
 }

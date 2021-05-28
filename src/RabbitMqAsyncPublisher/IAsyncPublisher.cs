@@ -7,11 +7,11 @@ namespace RabbitMqAsyncPublisher
 {
     public interface IAsyncPublisher<TResult> : IDisposable
     {
-        Task<TResult> PublishAsync(
-            string exchange,
+        Task<TResult> PublishAsync(string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
             IBasicProperties properties,
-            CancellationToken cancellationToken);
+            string correlationId = null,
+            CancellationToken cancellationToken = default);
     }
 }

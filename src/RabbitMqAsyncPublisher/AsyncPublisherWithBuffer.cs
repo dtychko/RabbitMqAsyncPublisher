@@ -95,7 +95,8 @@ namespace RabbitMqAsyncPublisher
             {
                 UpdateState(1, publishJob.Args.Body.Length);
                 var handleJobTask = _decorated.PublishAsync(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
-                    publishJob.Args.Body, publishJob.Args.Properties, publishJob.CancellationToken);
+                    publishJob.Args.Body, publishJob.Args.Properties, publishJob.Args.CorrelationId,
+                    publishJob.CancellationToken);
 
                 // ReSharper disable once MethodSupportsCancellation
                 Task.Run(async () =>
@@ -167,9 +168,8 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public Task<TResult> PublishAsync(
-            string exchange, string routingKey, ReadOnlyMemory<byte> body, IBasicProperties properties,
-            CancellationToken cancellationToken)
+        public Task<TResult> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+            IBasicProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {
@@ -182,7 +182,7 @@ namespace RabbitMqAsyncPublisher
             }
 
             return PublishAsyncCore(
-                new PublishArgs(exchange, routingKey, body, properties), cancellationToken,
+                new PublishArgs(exchange, routingKey, body, properties, correlationId), cancellationToken,
                 _diagnostics, _publishLoop, CreateStatus);
         }
 
