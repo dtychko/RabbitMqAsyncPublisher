@@ -101,7 +101,7 @@ namespace Tests
                     IDisposable CreatePublisher(IModel model)
                     {
                         var innerPublisher =
-                            new AsyncPublisher(model, new AsyncPublisherConsoleDiagnostics());
+                            new AsyncPublisher(model);
                         return publisherProxy.ConnectTo(innerPublisher);
                     }
                     

@@ -102,8 +102,7 @@ namespace RabbitMqAsyncPublisher
                             model =>
                             {
                                 model.ConfirmSelect();
-                                var innerPublisher = new AsyncPublisher(model,
-                                    new AsyncPublisherConsoleDiagnostics());
+                                var innerPublisher = new AsyncPublisher(model);
                                 return publisherProxy.ConnectTo(innerPublisher);
                             });
                     }))

@@ -199,39 +199,4 @@ namespace RabbitMqAsyncPublisher
         {
         }
     }
-
-    public static class DiagnosticsUtils
-    {
-        public static void TrackSafe<T1>(Action<T1> track, T1 arg1)
-        {
-            TrackSafe(() => track(arg1));
-        }
-
-        public static void TrackSafe<T1, T2>(Action<T1, T2> track, T1 arg1, T2 arg2)
-        {
-            TrackSafe(() => track(arg1, arg2));
-        }
-
-        public static void TrackSafe<T1, T2, T3>(Action<T1, T2, T3> track, T1 arg1, T2 arg2, T3 arg3)
-        {
-            TrackSafe(() => track(arg1, arg2, arg3));
-        }
-
-        public static void TrackSafe<T1, T2, T3, T4>(Action<T1, T2, T3, T4> track, T1 arg1, T2 arg2, T3 arg3, T4 arg4)
-        {
-            TrackSafe(() => track(arg1, arg2, arg3, arg4));
-        }
-
-        public static void TrackSafe(Action track)
-        {
-            try
-            {
-                track();
-            }
-            catch
-            {
-                // Ignore all exceptions during tracking diagnostics data 
-            }
-        }
-    }
 }

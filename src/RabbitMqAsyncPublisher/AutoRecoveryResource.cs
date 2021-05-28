@@ -3,7 +3,7 @@ using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
-    using static DiagnosticsUtils;
+    using static AsyncPublisherUtils;
 
     /// <summary>
     /// Represents a resource with shutdown-able lifecycle,

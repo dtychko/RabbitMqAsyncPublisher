@@ -6,7 +6,7 @@ using RabbitMQ.Client;
 
 namespace RabbitMqAsyncPublisher
 {
-    using static DiagnosticsUtils;
+    using static AsyncPublisherUtils;
 
     public class AsyncPublisherWithBuffer<TResult> : IAsyncPublisher<TResult>
     {

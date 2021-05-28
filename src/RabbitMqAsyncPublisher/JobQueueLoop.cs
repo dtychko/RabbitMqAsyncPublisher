@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace RabbitMqAsyncPublisher
 {
-    using static DiagnosticsUtils;
+    using static AsyncPublisherUtils;
 
     internal class JobQueueLoop<TJob>
     {

@@ -74,6 +74,7 @@
     </ItemGroup>
     <ItemGroup>
         <Compile Include="AsyncManualResetEvent.cs" />
+        <Compile Include="AsyncPublisherUtils.cs" />
         <Compile Include="AsyncPublisherWithBufferDiagnostics.cs" />
         <Compile Include="BrokerOrderingTest.cs" />
         <Compile Include="IAsyncPublisher.cs" />
@@ -91,7 +92,7 @@
         <Compile Include="Program.cs" />
         <Compile Include="Properties\AssemblyInfo.cs" />
         <Compile Include="AsyncPublisher.cs" />
-        <Compile Include="QueueBasedAsyncPublisherDiagnostics.cs" />
+        <Compile Include="AsyncPublisherDiagnostics.cs" />
         <Compile Include="AsyncPublisherWithBuffer.cs" />
         <Compile Include="SyncPublisher.cs" />
         <Compile Include="Utils.cs" />

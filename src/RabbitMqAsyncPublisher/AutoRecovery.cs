@@ -9,7 +9,7 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    using static DiagnosticsUtils;
+    using static AsyncPublisherUtils;
 
     public static class AutoRecovery
     {
