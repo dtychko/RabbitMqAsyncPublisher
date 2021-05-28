@@ -15,7 +15,7 @@ namespace RabbitMqAsyncPublisher
         private readonly IModel _model;
         private readonly IAsyncPublisherDiagnostics _diagnostics;
 
-        private readonly JobQueueLoop<PublishJob> _publishLoop;
+        private readonly JobQueueLoop<PublishJob<bool>> _publishLoop;
         private readonly JobQueueLoop<AckArgs> _ackLoop;
 
         private readonly AsyncPublisherTaskCompletionSourceRegistry _completionSourceRegistry =
@@ -44,7 +44,7 @@ namespace RabbitMqAsyncPublisher
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
-            _publishLoop = new JobQueueLoop<PublishJob>(HandlePublishJob, _diagnostics);
+            _publishLoop = new JobQueueLoop<PublishJob<bool>>(HandlePublishJob, _diagnostics);
             _ackLoop = new JobQueueLoop<AckArgs>(HandleAckJob, _diagnostics);
 
             _model.BasicAcks += OnBasicAcks;
@@ -65,14 +65,14 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackAckJobEnqueued, ackJob, CreateStatus());
         }
 
-        private void HandlePublishJob(Func<PublishJob> dequeuePublishJob)
+        private void HandlePublishJob(Func<PublishJob<bool>> dequeuePublishJob)
         {
             var publishJob = dequeuePublishJob();
             TrackSafe(_diagnostics.TrackPublishJobStarting, publishJob.Args, CreateStatus());
 
             if (_disposeCancellationToken.IsCancellationRequested)
             {
-                var ex = (Exception) new ObjectDisposedException(nameof(AsyncPublisher));
+                var ex = (Exception) new ObjectDisposedException(GetType().Name);
                 TrackSafe(_diagnostics.TrackPublishJobFailed,
                     publishJob.Args, CreateStatus(), (ulong) 0, TimeSpan.Zero, ex);
                 ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
@@ -172,64 +172,17 @@ namespace RabbitMqAsyncPublisher
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {
-                var ex = new ObjectDisposedException(nameof(AsyncPublisher));
+                var ex = new ObjectDisposedException(GetType().Name);
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Publisher is already disposed: {nameof(exchange)}={exchange}; {nameof(routingKey)}={routingKey}",
+                    $"Publisher '{GetType().Name}' is already disposed: {nameof(exchange)}={exchange}; {nameof(routingKey)}={routingKey}",
                     ex);
 
                 throw ex;
             }
 
-            return PublishAsyncCore(new PublishArgs(exchange, routingKey, body, properties), cancellationToken);
-        }
-
-        private async Task<bool> PublishAsyncCore(PublishArgs publishArgs, CancellationToken cancellationToken)
-        {
-            TrackSafe(_diagnostics.TrackPublishStarted, publishArgs);
-            var stopwatch = Stopwatch.StartNew();
-
-            try
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var publishJob = new PublishJob(publishArgs, cancellationToken, new TaskCompletionSource<bool>());
-                var tryRemovePublishJob = _publishLoop.Enqueue(publishJob);
-                TrackSafe(_diagnostics.TrackPublishJobEnqueued, publishJob.Args, CreateStatus());
-
-                var result =
-                    await WaitForPublishCompletedOrCancelled(publishJob, tryRemovePublishJob, cancellationToken)
-                        .ConfigureAwait(false);
-                TrackSafe(_diagnostics.TrackPublishCompleted, publishArgs, stopwatch.Elapsed);
-
-                return result;
-            }
-            catch (OperationCanceledException)
-            {
-                TrackSafe(_diagnostics.TrackPublishCancelled, publishArgs, stopwatch.Elapsed);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackPublishFailed, publishArgs, stopwatch.Elapsed, ex);
-                throw;
-            }
-        }
-
-        private async Task<bool> WaitForPublishCompletedOrCancelled(PublishJob job,
-            Func<bool> tryRemovePublishJob, CancellationToken cancellationToken)
-        {
-            var jobTask = job.TaskCompletionSource.Task;
-            var firstCompletedTask = await Task.WhenAny(
-                Task.Delay(-1, cancellationToken),
-                jobTask
-            ).ConfigureAwait(false);
-
-            if (firstCompletedTask != jobTask && tryRemovePublishJob())
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-            }
-
-            return await jobTask.ConfigureAwait(false);
+            return PublishAsyncCore(
+                new PublishArgs(exchange, routingKey, body, properties), cancellationToken,
+                _diagnostics, _publishLoop, CreateStatus);
         }
 
         public void Dispose()
@@ -245,7 +198,7 @@ namespace RabbitMqAsyncPublisher
                 _disposeCancellationSource.Dispose();
             }
 
-            TrackSafe(_diagnostics.TrackDisposeStarted);
+            TrackSafe(_diagnostics.TrackDisposeStarted, CreateStatus());
             var stopwatch = Stopwatch.StartNew();
 
             try
@@ -260,10 +213,10 @@ namespace RabbitMqAsyncPublisher
 
                 foreach (var source in _completionSourceRegistry.RemoveAllUpTo(ulong.MaxValue))
                 {
-                    ScheduleTrySetException(source, new ObjectDisposedException(nameof(AsyncPublisher)));
+                    ScheduleTrySetException(source, new ObjectDisposedException(GetType().Name));
                 }
 
-                TrackSafe(_diagnostics.TrackDisposeCompleted, stopwatch.Elapsed);
+                TrackSafe(_diagnostics.TrackDisposeCompleted, CreateStatus(), stopwatch.Elapsed);
             }
             catch (Exception ex)
             {
@@ -282,20 +235,20 @@ namespace RabbitMqAsyncPublisher
             Interlocked.Exchange(ref shutdownEventArgs, _model.CloseReason);
             return !(shutdownEventArgs is null);
         }
+    }
 
-        private readonly struct PublishJob
+    internal readonly struct PublishJob<TResult>
+    {
+        public readonly PublishArgs Args;
+        public readonly CancellationToken CancellationToken;
+        public readonly TaskCompletionSource<TResult> TaskCompletionSource;
+
+        public PublishJob(PublishArgs args, CancellationToken cancellationToken,
+            TaskCompletionSource<TResult> taskCompletionSource)
         {
-            public readonly PublishArgs Args;
-            public readonly CancellationToken CancellationToken;
-            public readonly TaskCompletionSource<bool> TaskCompletionSource;
-
-            public PublishJob(PublishArgs args, CancellationToken cancellationToken,
-                TaskCompletionSource<bool> taskCompletionSource)
-            {
-                Args = args;
-                CancellationToken = cancellationToken;
-                TaskCompletionSource = taskCompletionSource;
-            }
+            Args = args;
+            CancellationToken = cancellationToken;
+            TaskCompletionSource = taskCompletionSource;
         }
     }
 

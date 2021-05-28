@@ -2,7 +2,7 @@
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IAsyncPublisherDiagnostics : IUnexpectedExceptionDiagnostics
+    public interface IPublisherDiagnostics
     {
         void TrackPublishStarted(PublishArgs publishArgs);
 
@@ -11,9 +11,16 @@ namespace RabbitMqAsyncPublisher
         void TrackPublishCancelled(PublishArgs publishArgs, TimeSpan duration);
 
         void TrackPublishFailed(PublishArgs publishArgs, TimeSpan duration, Exception ex);
+    }
 
-        void TrackPublishJobEnqueued(PublishArgs publishArgs, AsyncPublisherStatus status);
+    public interface IQueueBasedPublisherDiagnostics<in TStatus> : IPublisherDiagnostics
+    {
+        void TrackPublishJobEnqueued(PublishArgs publishArgs, TStatus status);
+    }
 
+    public interface IAsyncPublisherDiagnostics : IQueueBasedPublisherDiagnostics<AsyncPublisherStatus>,
+        IUnexpectedExceptionDiagnostics
+    {
         void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherStatus status);
 
         void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherStatus status, ulong deliveryTag);
@@ -33,9 +40,9 @@ namespace RabbitMqAsyncPublisher
 
         void TrackAckJobCompleted(AckArgs ackArgs, AsyncPublisherStatus status, TimeSpan duration);
 
-        void TrackDisposeStarted();
+        void TrackDisposeStarted(AsyncPublisherStatus status);
 
-        void TrackDisposeCompleted(TimeSpan duration);
+        void TrackDisposeCompleted(AsyncPublisherStatus status, TimeSpan duration);
     }
 
     public class AsyncPublisherDiagnostics : IAsyncPublisherDiagnostics
@@ -107,11 +114,11 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackDisposeStarted()
+        public virtual void TrackDisposeStarted(AsyncPublisherStatus status)
         {
         }
 
-        public virtual void TrackDisposeCompleted(TimeSpan duration)
+        public virtual void TrackDisposeCompleted(AsyncPublisherStatus status, TimeSpan duration)
         {
         }
     }

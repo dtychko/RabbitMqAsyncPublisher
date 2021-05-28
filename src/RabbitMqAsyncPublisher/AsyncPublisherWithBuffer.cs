@@ -13,7 +13,7 @@ namespace RabbitMqAsyncPublisher
         private readonly IAsyncPublisher<TResult> _decorated;
         private readonly IAsyncPublisherWithBufferDiagnostics _diagnostics;
 
-        private readonly JobQueueLoop<PublishJob> _publishLoop;
+        private readonly JobQueueLoop<PublishJob<TResult>> _publishLoop;
 
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
         private readonly object _currentStateSyncRoot = new object();
@@ -48,10 +48,10 @@ namespace RabbitMqAsyncPublisher
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
-            _publishLoop = new JobQueueLoop<PublishJob>(HandlePublishJobAsync, _diagnostics);
+            _publishLoop = new JobQueueLoop<PublishJob<TResult>>(HandlePublishJobAsync, _diagnostics);
         }
 
-        private async Task HandlePublishJobAsync(Func<PublishJob> dequeueJob)
+        private async Task HandlePublishJobAsync(Func<PublishJob<TResult>> dequeueJob)
         {
             try
             {
@@ -59,34 +59,44 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException)
             {
-                var tcs = dequeueJob().TaskCompletionSource;
-#pragma warning disable 4014
-                // ReSharper disable once MethodSupportsCancellation
-                Task.Run(() =>
-                    tcs.TrySetException(new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>))));
-#pragma warning restore 4014
+                var publishJob = dequeueJob();
+                var ex = new ObjectDisposedException(GetType().Name);
+                TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(), TimeSpan.Zero, ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
                 return;
             }
 
             HandlePublishJob(dequeueJob);
         }
 
-        private void HandlePublishJob(Func<PublishJob> dequeueJob)
+        private void HandlePublishJob(Func<PublishJob<TResult>> dequeueJob)
         {
             var publishJob = dequeueJob();
-            TrackSafe(_diagnostics.TrackJobStarting, publishJob.Args, CreateStatus(), publishJob.Stopwatch.Elapsed);
+            TrackSafe(_diagnostics.TrackPublishJobStarting, publishJob.Args, CreateStatus());
+
+            if (_disposeCancellationToken.IsCancellationRequested)
+            {
+                var ex = (Exception) new ObjectDisposedException(GetType().Name);
+                TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(), TimeSpan.Zero, ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+                return;
+            }
+
+            if (publishJob.CancellationToken.IsCancellationRequested)
+            {
+                TrackSafe(_diagnostics.TrackPublishJobCancelled, publishJob.Args, CreateStatus(), TimeSpan.Zero);
+                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, publishJob.CancellationToken);
+            }
+
+            TrackSafe(_diagnostics.TrackPublishJobStarted, publishJob.Args, CreateStatus());
+            var stopwatch = Stopwatch.StartNew();
 
             try
             {
-                publishJob.CancellationToken.ThrowIfCancellationRequested();
-
                 UpdateState(1, publishJob.Args.Body.Length);
                 var handleJobTask = _decorated.PublishAsync(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
-                    publishJob.Args.Body,
-                    publishJob.Args.Properties, publishJob.CancellationToken);
-                TrackSafe(_diagnostics.TrackJobStarted, publishJob.Args, CreateStatus(), publishJob.Stopwatch.Elapsed);
+                    publishJob.Args.Body, publishJob.Args.Properties, publishJob.CancellationToken);
 
-#pragma warning disable 4014
                 // ReSharper disable once MethodSupportsCancellation
                 Task.Run(async () =>
                 {
@@ -97,8 +107,8 @@ namespace RabbitMqAsyncPublisher
                         var result = await handleJobTask.ConfigureAwait(false);
                         resolve = () =>
                         {
-                            TrackSafe(_diagnostics.TrackJobSucceeded, publishJob.Args, CreateStatus(),
-                                publishJob.Stopwatch.Elapsed);
+                            TrackSafe(_diagnostics.TrackPublishJobCompleted, publishJob.Args, CreateStatus(),
+                                stopwatch.Elapsed);
                             publishJob.TaskCompletionSource.TrySetResult(result);
                         };
                     }
@@ -106,8 +116,8 @@ namespace RabbitMqAsyncPublisher
                     {
                         resolve = () =>
                         {
-                            TrackSafe(_diagnostics.TrackJobCancelled, publishJob.Args, CreateStatus(),
-                                publishJob.Stopwatch.Elapsed);
+                            TrackSafe(_diagnostics.TrackPublishJobCancelled, publishJob.Args, CreateStatus(),
+                                stopwatch.Elapsed);
                             publishJob.TaskCompletionSource.TrySetCanceled(ex.CancellationToken);
                         };
                     }
@@ -115,9 +125,8 @@ namespace RabbitMqAsyncPublisher
                     {
                         resolve = () =>
                         {
-                            TrackSafe(_diagnostics.TrackJobFailed, publishJob.Args, CreateStatus(),
-                                publishJob.Stopwatch.Elapsed,
-                                ex);
+                            TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(),
+                                stopwatch.Elapsed, ex);
                             publishJob.TaskCompletionSource.TrySetException(ex);
                         };
                     }
@@ -125,27 +134,17 @@ namespace RabbitMqAsyncPublisher
                     UpdateState(-1, -publishJob.Args.Body.Length);
                     resolve();
                 });
-#pragma warning restore 4014
             }
             catch (OperationCanceledException ex)
             {
-                TrackSafe(_diagnostics.TrackJobCancelled, publishJob.Args, CreateStatus(),
-                    publishJob.Stopwatch.Elapsed);
-
-#pragma warning disable 4014
-                // ReSharper disable once MethodSupportsCancellation
-                Task.Run(() => publishJob.TaskCompletionSource.TrySetCanceled(ex.CancellationToken));
-#pragma warning restore 4014
+                TrackSafe(_diagnostics.TrackPublishJobCancelled, publishJob.Args, CreateStatus(), stopwatch.Elapsed);
+                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
             }
             catch (Exception ex)
             {
-                TrackSafe(_diagnostics.TrackJobFailed, publishJob.Args, CreateStatus(), publishJob.Stopwatch.Elapsed,
-                    ex);
-
-#pragma warning disable 4014
-                // ReSharper disable once MethodSupportsCancellation
-                Task.Run(() => publishJob.TaskCompletionSource.TrySetException(ex));
-#pragma warning restore 4014
+                TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(),
+                    stopwatch.Elapsed, ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
             }
         }
 
@@ -174,47 +173,17 @@ namespace RabbitMqAsyncPublisher
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {
-                throw new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
+                var ex = new ObjectDisposedException(GetType().Name);
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"Publisher '{GetType().Name}' is already disposed: {nameof(exchange)}={exchange}; {nameof(routingKey)}={routingKey}",
+                    ex);
+
+                throw ex;
             }
 
-            if (cancellationToken.IsCancellationRequested)
-            {
-                TrackSafe(_diagnostics.TrackJobCancelled,
-                    new PublishArgs(exchange, routingKey, body, properties),
-                    CreateStatus(),
-                    TimeSpan.Zero);
-                return Task.FromCanceled<TResult>(cancellationToken);
-            }
-
-            var job = new PublishJob(exchange, routingKey, body, properties, cancellationToken,
-                new TaskCompletionSource<TResult>(), Stopwatch.StartNew());
-            var tryCancelJob = _publishLoop.Enqueue(job);
-
-            TrackSafe(_diagnostics.TrackJobEnqueued,
-                new PublishArgs(exchange, routingKey, body, properties),
-                CreateStatus()
-            );
-
-            return WaitForPublishCompletedOrCancelled(job, tryCancelJob, cancellationToken);
-        }
-
-        private async Task<TResult> WaitForPublishCompletedOrCancelled(PublishJob publishJob, Func<bool> tryCancelJob,
-            CancellationToken cancellationToken)
-        {
-            var jobTask = publishJob.TaskCompletionSource.Task;
-            var firstCompletedTask = await Task.WhenAny(
-                Task.Delay(-1, cancellationToken),
-                jobTask
-            ).ConfigureAwait(false);
-
-            if (firstCompletedTask != jobTask && tryCancelJob())
-            {
-                TrackSafe(_diagnostics.TrackJobCancelled, publishJob.Args, CreateStatus(),
-                    publishJob.Stopwatch.Elapsed);
-                return await Task.FromCanceled<TResult>(cancellationToken).ConfigureAwait(false);
-            }
-
-            return await jobTask.ConfigureAwait(false);
+            return PublishAsyncCore(
+                new PublishArgs(exchange, routingKey, body, properties), cancellationToken,
+                _diagnostics, _publishLoop, CreateStatus);
         }
 
         public void Dispose()
@@ -233,36 +202,45 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackDisposeStarted, CreateStatus());
             var stopwatch = Stopwatch.StartNew();
 
-            _decorated.Dispose();
+            try
+            {
+                _decorated.Dispose();
 
-            // ReSharper disable once MethodSupportsCancellation
-            _publishLoop.StopAsync().Wait();
+                // ReSharper disable once MethodSupportsCancellation
+                _publishLoop.StopAsync().Wait();
 
-            TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
+                TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException, $"Unable to dispose publisher '{GetType().Name}'", ex);
+            }
         }
 
         private AsyncPublisherWithBufferStatus CreateStatus()
         {
             return new AsyncPublisherWithBufferStatus(_publishLoop.QueueSize, _processingMessages, _processingBytes);
         }
+    }
 
-        private readonly struct PublishJob
+    public readonly struct AsyncPublisherWithBufferStatus
+    {
+        public readonly int JobQueueSize;
+        public readonly int ProcessingMessages;
+        public readonly int ProcessingBytes;
+
+        public AsyncPublisherWithBufferStatus(int jobQueueSize, int processingMessages, int processingBytes)
         {
-            public readonly PublishArgs Args;
-            public readonly CancellationToken CancellationToken;
-            public readonly TaskCompletionSource<TResult> TaskCompletionSource;
-            public readonly Stopwatch Stopwatch;
+            JobQueueSize = jobQueueSize;
+            ProcessingMessages = processingMessages;
+            ProcessingBytes = processingBytes;
+        }
 
-            public PublishJob(string exchange, string routingKey, ReadOnlyMemory<byte> body,
-                IBasicProperties properties,
-                CancellationToken cancellationToken, TaskCompletionSource<TResult> taskCompletionSource,
-                Stopwatch stopwatch)
-            {
-                Args = new PublishArgs(exchange, routingKey, body, properties);
-                CancellationToken = cancellationToken;
-                TaskCompletionSource = taskCompletionSource;
-                Stopwatch = stopwatch;
-            }
+        public override string ToString()
+        {
+            return $"{nameof(JobQueueSize)}: {JobQueueSize}; " +
+                   $"{nameof(ProcessingMessages)}: {ProcessingMessages}; " +
+                   $"{nameof(ProcessingBytes)}: {ProcessingBytes}";
         }
     }
 }

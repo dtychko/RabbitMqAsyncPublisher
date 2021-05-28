@@ -2,38 +2,25 @@
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IAsyncPublisherWithBufferDiagnostics : IUnexpectedExceptionDiagnostics
+    public interface IAsyncPublisherWithBufferDiagnostics :
+        IQueueBasedPublisherDiagnostics<AsyncPublisherWithBufferStatus>, IUnexpectedExceptionDiagnostics
     {
-        void TrackJobEnqueued(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
+        void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
 
-        void TrackJobStarting(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status, TimeSpan elapsed);
+        void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
 
-        void TrackJobStarted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status, TimeSpan elapsed);
+        void TrackPublishJobCompleted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
+            TimeSpan duration);
 
-        void TrackJobSucceeded(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status, TimeSpan elapsed);
+        void TrackPublishJobCancelled(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
+            TimeSpan duration);
 
-        void TrackJobCancelled(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status, TimeSpan elapsed);
-
-        void TrackJobFailed(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status, TimeSpan elapsed,
-            Exception ex);
+        void TrackPublishJobFailed(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
+            TimeSpan duration, Exception ex);
 
         void TrackDisposeStarted(AsyncPublisherWithBufferStatus status);
 
         void TrackDisposeSucceeded(AsyncPublisherWithBufferStatus status, TimeSpan duration);
-    }
-
-    public readonly struct AsyncPublisherWithBufferStatus
-    {
-        public readonly int JobQueueSize;
-        public readonly int ProcessingMessages;
-        public readonly int ProcessingBytes;
-
-        public AsyncPublisherWithBufferStatus(int jobQueueSize, int processingMessages, int processingBytes)
-        {
-            JobQueueSize = jobQueueSize;
-            ProcessingMessages = processingMessages;
-            ProcessingBytes = processingBytes;
-        }
     }
 
     public class AsyncPublisherWithBufferDiagnostics : IAsyncPublisherWithBufferDiagnostics
@@ -49,32 +36,47 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackJobEnqueued(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status)
+        public virtual void TrackPublishStarted(PublishArgs publishArgs)
         {
         }
 
-        public virtual void TrackJobStarting(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
-            TimeSpan elapsed)
+        public virtual void TrackPublishCompleted(PublishArgs publishArgs, TimeSpan duration)
         {
         }
 
-        public virtual void TrackJobStarted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
-            TimeSpan elapsed)
+        public virtual void TrackPublishCancelled(PublishArgs publishArgs, TimeSpan duration)
         {
         }
 
-        public virtual void TrackJobSucceeded(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
-            TimeSpan elapsed)
+        public virtual void TrackPublishFailed(PublishArgs publishArgs, TimeSpan duration, Exception ex)
         {
         }
 
-        public virtual void TrackJobCancelled(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
-            TimeSpan elapsed)
+        public virtual void TrackPublishJobEnqueued(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status)
         {
         }
 
-        public virtual void TrackJobFailed(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
-            TimeSpan elapsed, Exception ex)
+        public virtual void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status)
+        {
+        }
+
+        public virtual void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status)
+        {
+        }
+
+        public virtual void TrackPublishJobCompleted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
+            TimeSpan duration)
+        {
+        }
+
+        public virtual void TrackPublishJobCancelled(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
+            TimeSpan duration)
+        {
+        }
+
+        public virtual void TrackPublishJobFailed(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
+            TimeSpan duration,
+            Exception ex)
         {
         }
 
@@ -83,10 +85,6 @@ namespace RabbitMqAsyncPublisher
         }
 
         public virtual void TrackDisposeSucceeded(AsyncPublisherWithBufferStatus status, TimeSpan duration)
-        {
-        }
-
-        public virtual void TrackReaderLoopIterationStarted(AsyncPublisherWithBufferStatus status)
         {
         }
     }
