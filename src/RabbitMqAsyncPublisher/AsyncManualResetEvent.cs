@@ -19,11 +19,16 @@ namespace RabbitMqAsyncPublisher
 
         public async Task WaitAsync(CancellationToken cancellationToken = default)
         {
+            if (!cancellationToken.CanBeCanceled)
+            {
+                await _taskCompletionSource.Task;
+                return;
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
 
-            var capturedSource = _taskCompletionSource;
             var result = await Task.WhenAny(
-                capturedSource.Task,
+                _taskCompletionSource.Task,
                 Task.Delay(-1, cancellationToken)
             ).ConfigureAwait(false);
 
@@ -33,6 +38,7 @@ namespace RabbitMqAsyncPublisher
         public void Set()
         {
             var capturedSource = _taskCompletionSource;
+
             if (capturedSource.Task.IsCompleted)
             {
                 return;

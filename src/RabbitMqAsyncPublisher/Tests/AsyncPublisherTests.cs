@@ -417,7 +417,8 @@ namespace Tests
         private static Task<T> TestPublish<T>(IAsyncPublisher<T> publisher,
             ReadOnlyMemory<byte> body = default, CancellationToken cancellationToken = default)
         {
-            return publisher.PublishAsync(string.Empty, string.Empty, body, default, default, cancellationToken);
+            return publisher.PublishAsync(string.Empty, string.Empty, body, MessageProperties.Default, default,
+                cancellationToken);
         }
 
         private static Task DequeueAndSetResultAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, T result)

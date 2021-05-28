@@ -84,7 +84,7 @@ namespace Tests
                                     var messageIndex = Interlocked.Increment(ref counter);
                                     var messageTag = $"Message #{messageIndex}";
                                     var body = Encoding.UTF8.GetBytes(messageTag);
-                                    var testBasicProperties = new TestBasicProperties {TestTag = messageTag};
+                                    var testBasicProperties = new TestMessageProperties {TestTag = messageTag};
                                     var task = retryingPublisher.PublishAsync(
                                         "test-exchange", "no-routing", body, testBasicProperties, default,
                                         cancellationToken);
@@ -239,7 +239,7 @@ namespace Tests
             public int MessageIndex { get; set; }
 
             /// <summary>
-            /// Unique message identifier which is also appended to message's <see cref="TestBasicProperties"/>.
+            /// Unique message identifier which is also appended to message's <see cref="TestMessageProperties"/>.
             /// Can be used to correlate messages in assertions and under debug.
             /// </summary>
             public string MessageTag { get; set; }

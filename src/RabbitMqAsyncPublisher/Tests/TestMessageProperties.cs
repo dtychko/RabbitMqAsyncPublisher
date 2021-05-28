@@ -2,7 +2,7 @@
 
 namespace Tests
 {
-    internal class TestBasicProperties : MessageProperties
+    internal class TestMessageProperties : MessageProperties
     {
         public string TestTag { get; set; }
     }

@@ -14,7 +14,7 @@ namespace Tests
         public ReadOnlyMemory<byte> Body { get; set; }
         public ulong DeliveryTag { get; set; }
     }
-    
+
     internal class TestNonRecoverableRabbitModel : IModel
     {
         private readonly Func<PublishRequest, Task<bool>> _handlePublish;
@@ -29,7 +29,8 @@ namespace Tests
 
         public readonly List<PublishRequest> PublishCalls = new List<PublishRequest>();
 
-        public readonly ConcurrentBag<PublishRequest> SuccessfullyCompletedPublishes = new ConcurrentBag<PublishRequest>();
+        public readonly ConcurrentBag<PublishRequest> SuccessfullyCompletedPublishes =
+            new ConcurrentBag<PublishRequest>();
 
         public void BasicPublish(string exchange, string routingKey, bool mandatory, IBasicProperties basicProperties,
             ReadOnlyMemory<byte> body)
@@ -75,7 +76,7 @@ namespace Tests
                     {
                         FireBasicNacks(new BasicNackEventArgs
                             {DeliveryTag = request.DeliveryTag, Multiple = false, Requeue = false});
-                    }                    
+                    }
                 }
             });
         }
@@ -162,7 +163,7 @@ namespace Tests
 
         IBasicPublishBatch IModel.CreateBasicPublishBatch() => throw new NotImplementedException();
 
-        IBasicProperties IModel.CreateBasicProperties() => throw new NotImplementedException();
+        IBasicProperties IModel.CreateBasicProperties() => new TestBasicProperties();
 
         void IModel.ExchangeBind(string destination, string source, string routingKey,
             IDictionary<string, object> arguments)
@@ -305,5 +306,167 @@ namespace Tests
         }
 
         #endregion
+    }
+
+    internal class TestBasicProperties : IBasicProperties
+    {
+        public ushort ProtocolClassId { get; set; }
+        public string ProtocolClassName { get; set; }
+        public void ClearAppId()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearClusterId()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearContentEncoding()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearContentType()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearCorrelationId()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearDeliveryMode()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearExpiration()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearHeaders()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearMessageId()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearPriority()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearReplyTo()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearTimestamp()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearType()
+        {
+            throw new NotImplementedException();
+        }
+
+        public void ClearUserId()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsAppIdPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsClusterIdPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsContentEncodingPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsContentTypePresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsCorrelationIdPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsDeliveryModePresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsExpirationPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsHeadersPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsMessageIdPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsPriorityPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsReplyToPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsTimestampPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsTypePresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool IsUserIdPresent()
+        {
+            throw new NotImplementedException();
+        }
+
+        public string AppId { get; set; }
+        public string ClusterId { get; set; }
+        public string ContentEncoding { get; set; }
+        public string ContentType { get; set; }
+        public string CorrelationId { get; set; }
+        public byte DeliveryMode { get; set; }
+        public string Expiration { get; set; }
+        public IDictionary<string, object> Headers { get; set; }
+        public string MessageId { get; set; }
+        public bool Persistent { get; set; }
+        public byte Priority { get; set; }
+        public string ReplyTo { get; set; }
+        public PublicationAddress ReplyToAddress { get; set; }
+        public AmqpTimestamp Timestamp { get; set; }
+        public string Type { get; set; }
+        public string UserId { get; set; }
     }
 }

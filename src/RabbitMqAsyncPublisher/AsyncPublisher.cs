@@ -267,7 +267,7 @@ namespace RabbitMqAsyncPublisher
             Exchange = exchange;
             RoutingKey = routingKey;
             Body = body;
-            Properties = properties;
+            Properties = properties ?? MessageProperties.Default;
             CorrelationId = correlationId ?? Guid.NewGuid().ToString("D");
             StartedAt = DateTimeOffset.UtcNow;
         }

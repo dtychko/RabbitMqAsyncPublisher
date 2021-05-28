@@ -18,6 +18,7 @@ namespace RabbitMqAsyncPublisher
             CancellationToken cancellationToken = default);
     }
 
+    // TODO: Think about converting to readonly struct
     public class MessageProperties
     {
         public static readonly MessageProperties Default = new MessageProperties();

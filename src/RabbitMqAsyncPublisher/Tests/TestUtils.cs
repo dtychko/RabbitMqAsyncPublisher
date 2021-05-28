@@ -52,7 +52,7 @@ namespace Tests
             }
         }
         
-        public static string GetMessageTag(MessageProperties properties) => ((TestBasicProperties) properties).TestTag;
+        public static string GetMessageTag(MessageProperties properties) => ((TestMessageProperties) properties).TestTag;
 
         public static bool WaitFor(
             Func<bool> predicate,
