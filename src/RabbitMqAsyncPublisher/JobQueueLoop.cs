@@ -59,7 +59,7 @@ namespace RabbitMqAsyncPublisher
             {
                 await _jobQueueReadyEvent.WaitAsync(_stopCancellationToken).ConfigureAwait(false);
 
-                while (!_stopCancellationToken.IsCancellationRequested || _jobQueue.CanDequeueJob())
+                while (!_stopCancellationToken.IsCancellationRequested)
                 {
                     _jobQueueReadyEvent.Reset();
 
@@ -74,22 +74,6 @@ namespace RabbitMqAsyncPublisher
             catch (OperationCanceledException) when (_stopCancellationToken.IsCancellationRequested)
             {
                 // Job loop gracefully stopped
-
-                if (_jobQueue.CanDequeueJob())
-                {
-                    Console.WriteLine($"[CRITICAL 1] Jow queue is not empty: jobQueueSize={_jobQueue.Size}");
-                }
-
-                // Handle jobs that could remain in the job queue
-                while (_jobQueue.CanDequeueJob())
-                {
-                    await HandleJobAsync().ConfigureAwait(false);
-                }
-
-                if (_jobQueue.CanDequeueJob())
-                {
-                    Console.WriteLine($"[CRITICAL 2] Jow queue is not empty: jobQueueSize={_jobQueue.Size}");
-                }
             }
             catch (Exception ex)
             {
@@ -97,13 +81,13 @@ namespace RabbitMqAsyncPublisher
                     $"[CRITICAL] Unexpected exception in job queue loop '{typeof(TJob).Name}': jobQueueSize={_jobQueue.Size}",
                     ex);
 
-                // TODO: ? Move publisher to state when it throws on each attempt to publish a message
-                // TODO: ? Restart the loop after some delay
+                return;
             }
 
-            if (_jobQueue.CanDequeueJob())
+            // Handle jobs that could remain in the job queue
+            while (_jobQueue.CanDequeueJob())
             {
-                Console.WriteLine($"[CRITICAL 3] Jow queue is not empty: jobQueueSize={_jobQueue.Size}");
+                await HandleJobAsync().ConfigureAwait(false);
             }
         }
 
@@ -132,8 +116,7 @@ namespace RabbitMqAsyncPublisher
                 if (!_stopCancellation.IsCancellationRequested)
                 {
                     _jobQueue.Complete();
-                    // ReSharper disable once MethodSupportsCancellation
-                    _jobQueueReadyEvent.SetAsync();
+                    _jobQueueReadyEvent.Set();
 
                     _stopCancellation.Cancel();
                     _stopCancellation.Dispose();

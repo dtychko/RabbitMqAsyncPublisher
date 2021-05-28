@@ -53,8 +53,6 @@ namespace RabbitMqAsyncPublisher
 
         private async Task HandlePublishJobAsync(Func<PublishJob> dequeueJob)
         {
-            Console.WriteLine("HandlePublishJobAsync");
-            
             try
             {
                 await _gateEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
@@ -75,8 +73,6 @@ namespace RabbitMqAsyncPublisher
 
         private void HandlePublishJob(Func<PublishJob> dequeueJob)
         {
-            Console.WriteLine("HandlePublishJob");
-            
             var publishJob = dequeueJob();
             TrackSafe(_diagnostics.TrackJobStarting, publishJob.Args, CreateStatus(), publishJob.Stopwatch.Elapsed);
 
@@ -239,27 +235,8 @@ namespace RabbitMqAsyncPublisher
 
             _decorated.Dispose();
 
-            // Console.WriteLine("_publishLoop.StopAsync().Wait()");
             // ReSharper disable once MethodSupportsCancellation
             _publishLoop.StopAsync().Wait();
-
-            // while (_jobQueue.CanDequeueJob())
-            // {
-            //     var job = _jobQueue.DequeueJob();
-            //
-            //     // ReSharper disable once MethodSupportsCancellation
-            //     Task.Run(() =>
-            //     {
-            //         var ex = new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
-            //         TrackSafe(_diagnostics.TrackJobFailed,
-            //             new PublishArgs(job.Exchange, job.RoutingKey, job.Body, job.Properties),
-            //             CreateStatus(),
-            //             job.Stopwatch.Elapsed,
-            //             ex);
-            //         job.TaskCompletionSource.TrySetException(
-            //             new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>)));
-            //     });
-            // }
 
             TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
         }

@@ -67,8 +67,6 @@ namespace RabbitMqAsyncPublisher
 
         private void HandlePublishJob(Func<PublishJob> dequeuePublishJob)
         {
-            Console.WriteLine(" >> HandlePublishJob");
-            
             var publishJob = dequeuePublishJob();
 
             if (_disposeCancellationToken.IsCancellationRequested)
