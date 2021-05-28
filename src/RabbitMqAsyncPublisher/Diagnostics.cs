@@ -41,11 +41,11 @@ namespace RabbitMqAsyncPublisher
         public readonly string Exchange;
         public readonly string RoutingKey;
         public readonly ReadOnlyMemory<byte> Body;
-        public readonly IBasicProperties Properties;
+        public readonly MessageProperties Properties;
         public readonly int Attempt;
 
         public PublishUnsafeAttemptArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body,
-            IBasicProperties properties, int attempt)
+            MessageProperties properties, int attempt)
         {
             Exchange = exchange;
             RoutingKey = routingKey;

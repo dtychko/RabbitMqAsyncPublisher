@@ -116,7 +116,8 @@ namespace RabbitMqAsyncPublisher
 
                 _completionSourceRegistry.Register(seqNo, publishJob.TaskCompletionSource);
                 _model.BasicPublish(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
-                    publishJob.Args.Properties, publishJob.Args.Body);
+                    publishJob.Args.Properties.ApplyTo(_model.CreateBasicProperties()),
+                    publishJob.Args.Body);
             }
             catch (Exception ex)
             {
@@ -167,7 +168,7 @@ namespace RabbitMqAsyncPublisher
         }
 
         public Task<bool> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
-            IBasicProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
+            MessageProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {
@@ -256,12 +257,12 @@ namespace RabbitMqAsyncPublisher
         public string Exchange { get; }
         public string RoutingKey { get; }
         public ReadOnlyMemory<byte> Body { get; }
-        public IBasicProperties Properties { get; }
+        public MessageProperties Properties { get; }
         public string CorrelationId { get; }
         public DateTimeOffset StartedAt { get; }
 
         public PublishArgs(string exchange, string routingKey, ReadOnlyMemory<byte> body,
-            IBasicProperties properties, string correlationId)
+            MessageProperties properties, string correlationId)
         {
             Exchange = exchange;
             RoutingKey = routingKey;

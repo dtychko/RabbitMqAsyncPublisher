@@ -169,7 +169,7 @@ namespace RabbitMqAsyncPublisher
         }
 
         public Task<TResult> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
-            IBasicProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
+            MessageProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {

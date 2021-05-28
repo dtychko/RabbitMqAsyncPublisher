@@ -36,18 +36,6 @@ namespace RabbitMqAsyncPublisher
 
             return builder.ToString();
         }
-
-        private static readonly Type _basicPropertiesType =
-            typeof(IModel).Assembly.GetTypes().First(x => x.FullName == "RabbitMQ.Client.Framing.BasicProperties");
-        
-        public static IBasicProperties CreateBasicProperties()
-        {
-            var sw = new Stopwatch();
-            sw.Start();
-            var result =  (IBasicProperties) Activator.CreateInstance(_basicPropertiesType);
-            Console.WriteLine($"Created in {sw.Elapsed.TotalMilliseconds}ms");
-            return result;
-        }
     }
 
     public class Disposable : IDisposable

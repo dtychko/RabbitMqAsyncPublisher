@@ -37,7 +37,7 @@ namespace RabbitMqAsyncPublisher
         }
 
         public async Task<RetryingPublisherResult> PublishAsync(string exchange, string routingKey,
-            ReadOnlyMemory<byte> body, IBasicProperties properties, string correlationId = null,
+            ReadOnlyMemory<byte> body, MessageProperties properties, string correlationId = null,
             CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -89,7 +89,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
+            MessageProperties properties,
             string correlationId,
             CancellationToken cancellationToken)
         {
@@ -130,7 +130,7 @@ namespace RabbitMqAsyncPublisher
             string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
+            MessageProperties properties,
             string correlationId,
             CancellationToken cancellationToken)
         {

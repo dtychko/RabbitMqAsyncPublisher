@@ -110,7 +110,7 @@ namespace RabbitMqAsyncPublisher
                     foreach (var message in Utils.GenerateMessages(100, 10240))
                     {
                         Console.WriteLine("Sending next message");
-                        retryingPublisher.PublishAsync("", "test.queue", message, Utils.CreateBasicProperties(),
+                        retryingPublisher.PublishAsync("", "test.queue", message, MessageProperties.Default,
                                 default)
                             .Wait();
                         Console.WriteLine("Sent message");
@@ -176,15 +176,13 @@ namespace RabbitMqAsyncPublisher
                     try
                     {
                         Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Publishing#{i} ...");
-                        var properties = model.CreateBasicProperties();
-                        properties.Persistent = true;
                         Console.WriteLine(
                             $" ** [{Thread.CurrentThread.ManagedThreadId}] Next seqno: {model.NextPublishSeqNo}");
                         publisher.PublishAsync(
                                 "",
                                 QueueName,
                                 Encoding.UTF8.GetBytes(Utils.GenerateString(1024)),
-                                properties)
+                                new MessageProperties(persistent: true))
                             .Wait();
                         Console.WriteLine($" >> [{Thread.CurrentThread.ManagedThreadId}] Published#{i}");
                     }
@@ -284,9 +282,7 @@ namespace RabbitMqAsyncPublisher
                     manualResetEvent.Reset();
                 }
 
-                var properties = model.CreateBasicProperties();
-                properties.Persistent = true;
-                tasks.Add(publisher.PublishAsync(message, properties).ContinueWith(_ =>
+                tasks.Add(publisher.PublishAsync(message, new MessageProperties(persistent: true)).ContinueWith(_ =>
                 {
                     if (Interlocked.Add(ref nonAcknowledgedSize, -message.Length) <
                         Math.Max(1, nonAcknowledgedSizeLimit / 2))
@@ -329,7 +325,7 @@ namespace RabbitMqAsyncPublisher
             _queueName = queueName;
         }
 
-        public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, IBasicProperties properties)
+        public Task<TResult> PublishAsync(ReadOnlyMemory<byte> message, MessageProperties properties)
         {
             return _publisher.PublishAsync(_exchange, _queueName, message, properties);
         }

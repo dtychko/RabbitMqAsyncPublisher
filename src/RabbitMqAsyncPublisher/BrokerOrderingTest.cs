@@ -76,7 +76,7 @@ namespace RabbitMqAsyncPublisher
                         var basicProperties = publishModel.CreateBasicProperties();
                         basicProperties.Headers = new Dictionary<string, object> {["X-Counter"] = counter};
                         var task = publisher.PublishAsync(
-                            "", QueueName, new ReadOnlyMemory<byte>(new byte[size]), basicProperties, default);
+                            "", QueueName, new ReadOnlyMemory<byte>(new byte[size]), MessageProperties.Default);
                         // Console.WriteLine($" >> {DateTime.Now:O} Finished sync part of publishing #{counter}");
                         await task.ConfigureAwait(false);
                         Console.WriteLine($" >> {DateTime.Now:O} Finished publishing #{counter}");

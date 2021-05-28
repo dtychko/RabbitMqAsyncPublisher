@@ -46,8 +46,6 @@ namespace Tests
             Console.WriteLine($"{GetTestTag(args)}/{args.Attempt}/started");
         }
 
-        private static string GetTestTag(PublishArgs args) => TestUtils.GetMessageTag(args.Properties);
-
         private static string GetTestTag(PublishUnsafeAttemptArgs args) => TestUtils.GetMessageTag(args.Properties);
     }
 }

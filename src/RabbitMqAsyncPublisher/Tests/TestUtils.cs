@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client;
+using RabbitMqAsyncPublisher;
 using Shouldly;
 
 namespace Tests
@@ -51,7 +52,7 @@ namespace Tests
             }
         }
         
-        public static string GetMessageTag(IBasicProperties properties) => ((TestBasicProperties) properties).TestTag;
+        public static string GetMessageTag(MessageProperties properties) => ((TestBasicProperties) properties).TestTag;
 
         public static bool WaitFor(
             Func<bool> predicate,

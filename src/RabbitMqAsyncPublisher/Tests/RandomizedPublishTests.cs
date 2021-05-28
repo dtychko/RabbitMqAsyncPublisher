@@ -46,7 +46,7 @@ namespace Tests
                 {
                     var model = new TestNonRecoverableRabbitModel(async publishArgs =>
                     {
-                        Console.WriteLine($" >> Starting next publish for {GetMessageTag(publishArgs.Properties)}");
+                        Console.WriteLine($" >> Starting next publish for UNKNOWN_MESSAGE_TAG");
                         SyncWait(random.Next(minSyncPublishSpinIterations, maxSyncPublishSpinIterations));
                         await Task.Delay(random.Next(minAsyncPublishWaitTime, maxAsyncPublishWaitTime));
                         return true;
@@ -178,14 +178,16 @@ namespace Tests
         {
             var unackedTags = new List<string>();
 
-            Console.WriteLine($" >> Acks: {string.Join(",", acks.Select(a => GetMessageTag(a.Properties)))}");
+            // Console.WriteLine($" >> Acks: {string.Join(",", acks.Select(a => GetMessageTag(a.Properties)))}");
 
             foreach (var pt in publishTasks)
             {
-                if (acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) == 0)
-                {
-                    unackedTags.Add(pt.MessageTag);
-                }
+                throw new NotImplementedException();
+                // TODO: Pass message tag in another way
+                // if (acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) == 0)
+                // {
+                //     unackedTags.Add(pt.MessageTag);
+                // }
             }
 
             if (unackedTags.Any())

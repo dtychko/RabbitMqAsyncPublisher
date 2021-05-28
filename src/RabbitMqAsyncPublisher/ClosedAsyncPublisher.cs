@@ -18,7 +18,7 @@ namespace RabbitMqAsyncPublisher
         public Task<TResult> PublishAsync(string exchange,
             string routingKey,
             ReadOnlyMemory<byte> body,
-            IBasicProperties properties,
+            MessageProperties properties,
             string correlationId = null,
             CancellationToken cancellationToken = default)
         {
