@@ -217,9 +217,11 @@ namespace Tests
         }
 
         [Test]
-        [Repeat(100)]
+        [Repeat(1000)]
         public async Task ShouldDispose()
         {
+            Console.WriteLine("==============================");
+
             var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
             var publisherMock = new AsyncPublisherMock<bool>(() =>
             {
@@ -235,6 +237,7 @@ namespace Tests
             var eventuallyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[2]));
             eventuallyDisposed.IsCompleted.ShouldBeFalse();
 
+            Console.WriteLine("publisher.Dispose()");
             publisher.Dispose();
 
             Console.WriteLine("await Task.WhenAny(eventuallyDisposed)");
