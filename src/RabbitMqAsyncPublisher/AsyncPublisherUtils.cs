@@ -7,7 +7,28 @@ namespace RabbitMqAsyncPublisher
 {
     internal static class AsyncPublisherUtils
     {
-        public static async Task<TResult> PublishAsyncCore<TResult, TStatus>(PublishArgs publishArgs,
+        public static Task<TResult> PublishAsyncCore<TResult, TStatus>(
+            PublishArgs publishArgs, CancellationToken cancellationToken,
+            Type publisherType, IQueueBasedPublisherDiagnostics<TStatus> diagnostics,
+            JobQueueLoop<PublishJob<TResult>> publishLoop, Func<TStatus> createStatus,
+            CancellationToken disposeCancellationToken)
+        {
+            if (disposeCancellationToken.IsCancellationRequested)
+            {
+                var ex = new ObjectDisposedException(publisherType.Name);
+                TrackSafe(diagnostics.TrackUnexpectedException,
+                    $"Publisher '{publisherType.Name}' is already disposed ({publishArgs})",
+                    ex);
+
+                throw ex;
+            }
+
+            return PublishAsync(
+                publishArgs, cancellationToken,
+                diagnostics, publishLoop, createStatus);
+        }
+
+        private static async Task<TResult> PublishAsync<TResult, TStatus>(PublishArgs publishArgs,
             CancellationToken cancellationToken, IQueueBasedPublisherDiagnostics<TStatus> diagnostics,
             JobQueueLoop<PublishJob<TResult>> publishLoop, Func<TStatus> createStatus)
         {
@@ -61,19 +82,28 @@ namespace RabbitMqAsyncPublisher
 
         public static void ScheduleTrySetResult<TResult>(TaskCompletionSource<TResult> source, TResult result)
         {
-            Task.Run(() => source.TrySetResult(result));
+            if (!source.Task.IsCompleted)
+            {
+                Task.Run(() => source.TrySetResult(result));
+            }
         }
 
         public static void ScheduleTrySetException<TResult>(TaskCompletionSource<TResult> source, Exception ex)
         {
-            Task.Run(() => source.TrySetException(ex));
+            if (!source.Task.IsCompleted)
+            {
+                Task.Run(() => source.TrySetException(ex));
+            }
         }
 
         public static void ScheduleTrySetCanceled<TResult>(TaskCompletionSource<TResult> source,
             CancellationToken cancellationToken)
         {
-            // ReSharper disable once MethodSupportsCancellation
-            Task.Run(() => source.TrySetCanceled(cancellationToken));
+            if (!source.Task.IsCompleted)
+            {
+                // ReSharper disable once MethodSupportsCancellation
+                Task.Run(() => source.TrySetCanceled(cancellationToken));
+            }
         }
 
         public static void TrackSafe<T1>(Action<T1> track, T1 arg1)

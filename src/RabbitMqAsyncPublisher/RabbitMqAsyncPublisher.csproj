@@ -94,6 +94,7 @@
         <Compile Include="AsyncPublisher.cs" />
         <Compile Include="AsyncPublisherDiagnostics.cs" />
         <Compile Include="AsyncPublisherWithBuffer.cs" />
+        <Compile Include="QueueBasedAsyncPublisherWithRetries.cs" />
         <Compile Include="SyncPublisher.cs" />
         <Compile Include="Utils.cs" />
     </ItemGroup>

@@ -2,7 +2,7 @@
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IPublisherDiagnostics
+    public interface IPublisherDiagnostics: IUnexpectedExceptionDiagnostics
     {
         void TrackPublishStarted(PublishArgs publishArgs);
 
@@ -18,8 +18,7 @@ namespace RabbitMqAsyncPublisher
         void TrackPublishJobEnqueued(PublishArgs publishArgs, TStatus status);
     }
 
-    public interface IAsyncPublisherDiagnostics : IQueueBasedPublisherDiagnostics<AsyncPublisherStatus>,
-        IUnexpectedExceptionDiagnostics
+    public interface IAsyncPublisherDiagnostics : IQueueBasedPublisherDiagnostics<AsyncPublisherStatus>
     {
         void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherStatus status);
 

@@ -170,19 +170,10 @@ namespace RabbitMqAsyncPublisher
         public Task<bool> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
             MessageProperties properties, string correlationId = null, CancellationToken cancellationToken = default)
         {
-            if (_disposeCancellationToken.IsCancellationRequested)
-            {
-                var ex = new ObjectDisposedException(GetType().Name);
-                TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Publisher '{GetType().Name}' is already disposed: {nameof(exchange)}={exchange}; {nameof(routingKey)}={routingKey}",
-                    ex);
-
-                throw ex;
-            }
-
             return PublishAsyncCore(
                 new PublishArgs(exchange, routingKey, body, properties, correlationId), cancellationToken,
-                _diagnostics, _publishLoop, CreateStatus);
+                GetType(), _diagnostics, _publishLoop, CreateStatus, _disposeCancellationToken
+            );
         }
 
         public void Dispose()
