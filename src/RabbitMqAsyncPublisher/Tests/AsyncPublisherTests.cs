@@ -67,7 +67,7 @@ namespace Tests
                 Task.Run(() => model.FireBasicNacks(new BasicNackEventArgs {DeliveryTag = 5, Multiple = false}));
                 (await tasks[4]).ShouldBeFalse();
                 tasks.Count(x => !x.IsCompleted).ShouldBe(4);
-                
+
                 Task.Run(() => model.FireBasicAcks(new BasicAckEventArgs {DeliveryTag = 3, Multiple = true}));
                 (await tasks[0]).ShouldBeTrue();
                 (await tasks[2]).ShouldBeTrue();
@@ -215,7 +215,7 @@ namespace Tests
                 return tcs.Task;
             }))
             {
-                var innerPublisherCancelled = TestPublish(publisher);
+                var currentlyPublishing = TestPublish(publisher);
 
                 await SpinWaitFor(() => events.Count == 1);
 
@@ -226,7 +226,6 @@ namespace Tests
 
                 cancellationTokenSource.Cancel();
 
-                Console.WriteLine("await Task.WhenAny(eventuallyCancelled)");
                 await Task.WhenAny(eventuallyCancelled);
                 eventuallyCancelled.IsCompleted.ShouldBeTrue();
                 eventuallyCancelled.IsCanceled.ShouldBeTrue();
@@ -240,12 +239,44 @@ namespace Tests
                 e.Set();
 
                 await SpinWaitFor(() => sources.Count == 1);
-                await DequeueAndSetCanceledAsync(sources);
+                await DequeueAndSetResultAsync(sources, true);
 
-                Console.WriteLine("await Task.WhenAny(innerPublisherCancelled)");
-                await Task.WhenAny(innerPublisherCancelled);
-                innerPublisherCancelled.IsCompleted.ShouldBeTrue();
-                innerPublisherCancelled.IsCanceled.ShouldBeTrue();
+                (await currentlyPublishing).ShouldBeTrue();
+            }
+        }
+
+        [Test]
+        public async Task ShouldNoCancelAfterBasicPublishIsCalled()
+        {
+            var events = new ConcurrentQueue<ManualResetEventSlim>();
+            var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
+            using (var publisher = CreateTarget(req =>
+            {
+                var mre = new ManualResetEventSlim(false);
+                events.Enqueue(mre);
+                mre.Wait();
+                var tcs = new TaskCompletionSource<bool>();
+                sources.Enqueue(tcs);
+                return tcs.Task;
+            }))
+            {
+                var cancellationTokenSource = new CancellationTokenSource();
+                var currentlyPublishing = TestPublish(publisher, cancellationToken: cancellationTokenSource.Token);
+
+                await SpinWaitFor(() => events.Count == 1);
+
+                cancellationTokenSource.Cancel();
+
+                await Task.Delay(100);
+                currentlyPublishing.IsCompleted.ShouldBeFalse();
+
+                events.TryDequeue(out var e);
+                e.Set();
+
+                await SpinWaitFor(() => sources.Count == 1);
+                await DequeueAndSetResultAsync(sources, true);
+
+                (await currentlyPublishing).ShouldBeTrue();
             }
         }
 
@@ -264,13 +295,16 @@ namespace Tests
                 return tcs.Task;
             }))
             {
-                var eventuallyProcessed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1]));
+                var currentlyPublishing = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[1]));
                 await SpinWaitFor(() => events.Count == 1);
 
                 var eventuallyDisposed = TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[2]));
                 eventuallyDisposed.IsCompleted.ShouldBeFalse();
 
                 publisher.Dispose();
+
+                events.TryDequeue(out var e);
+                e.Set();
 
                 Console.WriteLine("await Task.WhenAny(eventuallyDisposed)");
                 await Task.WhenAny(eventuallyDisposed);
@@ -280,14 +314,12 @@ namespace Tests
                 Assert.Throws<ObjectDisposedException>(() =>
                     TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[3])));
 
-                events.TryDequeue(out var e);
-                e.Set();
-
                 await SpinWaitFor(() => sources.Count == 1);
                 await DequeueAndSetResultAsync(sources, true);
 
-                eventuallyProcessed.IsFaulted.ShouldBeFalse();
-                eventuallyProcessed.Result.ShouldBeTrue();
+                await Task.WhenAny(currentlyPublishing);
+                currentlyPublishing.IsFaulted.ShouldBeTrue();
+                currentlyPublishing.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
             }
         }
 

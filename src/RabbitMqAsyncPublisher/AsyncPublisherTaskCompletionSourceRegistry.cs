@@ -7,43 +7,61 @@ namespace RabbitMqAsyncPublisher
     {
         private readonly Dictionary<ulong, SourceEntry> _sources = new Dictionary<ulong, SourceEntry>();
         private readonly LinkedList<ulong> _deliveryTagQueue = new LinkedList<ulong>();
+        private volatile int _size;
+
+        public int Size => _size;
 
         public void Register(ulong deliveryTag, TaskCompletionSource<bool> taskCompletionSource)
         {
-            _sources[deliveryTag] = new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag));
+            lock (_sources)
+            {
+                _sources.Add(deliveryTag,
+                    new SourceEntry(taskCompletionSource, _deliveryTagQueue.AddLast(deliveryTag)));
+                _size = _deliveryTagQueue.Count;
+            }
         }
 
         public bool TryRemoveSingle(ulong deliveryTag, out TaskCompletionSource<bool> source)
         {
-            if (_sources.TryGetValue(deliveryTag, out var entry))
+            lock (_sources)
             {
-                _sources.Remove(deliveryTag);
-                _deliveryTagQueue.Remove(entry.QueueNode);
-                source = entry.Source;
-                return true;
-            }
+                if (_sources.TryGetValue(deliveryTag, out var entry))
+                {
+                    _sources.Remove(deliveryTag);
+                    _deliveryTagQueue.Remove(entry.QueueNode);
+                    _size = _deliveryTagQueue.Count;
 
-            source = default;
-            return false;
+                    source = entry.Source;
+                    return true;
+                }
+
+                source = default;
+                return false;
+            }
         }
 
         // ReSharper disable once ReturnTypeCanBeEnumerable.Global
         public IReadOnlyList<TaskCompletionSource<bool>> RemoveAllUpTo(ulong deliveryTag)
         {
-            var result = new List<TaskCompletionSource<bool>>();
-
-            while (_deliveryTagQueue.Count > 0 && _deliveryTagQueue.First.Value <= deliveryTag)
+            lock (_sources)
             {
-                if (_sources.TryGetValue(_deliveryTagQueue.First.Value, out var entry))
+                var result = new List<TaskCompletionSource<bool>>();
+
+                while (_deliveryTagQueue.Count > 0 && _deliveryTagQueue.First.Value <= deliveryTag)
                 {
-                    _sources.Remove(_deliveryTagQueue.First.Value);
-                    result.Add(entry.Source);
+                    if (_sources.TryGetValue(_deliveryTagQueue.First.Value, out var entry))
+                    {
+                        _sources.Remove(_deliveryTagQueue.First.Value);
+                        result.Add(entry.Source);
+                    }
+
+                    _deliveryTagQueue.RemoveFirst();
                 }
 
-                _deliveryTagQueue.RemoveFirst();
-            }
+                _size = _deliveryTagQueue.Count;
 
-            return result;
+                return result;
+            }
         }
 
         private readonly struct SourceEntry

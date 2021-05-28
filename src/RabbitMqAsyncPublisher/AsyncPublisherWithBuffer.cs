@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,10 +13,7 @@ namespace RabbitMqAsyncPublisher
         private readonly IAsyncPublisher<TResult> _decorated;
         private readonly IAsyncPublisherWithBufferDiagnostics _diagnostics;
 
-        private readonly Task _readerLoopTask;
-
-        private readonly JobQueue<Job> _jobQueue = new JobQueue<Job>();
-        private readonly AsyncManualResetEvent _jobQueueReadyEvent = new AsyncManualResetEvent(false);
+        private readonly JobQueueLoop<Job> _publishLoop;
 
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
         private readonly object _currentStateSyncRoot = new object();
@@ -52,45 +48,24 @@ namespace RabbitMqAsyncPublisher
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
-            _readerLoopTask = Task.Run(StartReaderLoop);
+            _publishLoop = new JobQueueLoop<Job>(HandleJob, _diagnostics);
         }
 
-        private async void StartReaderLoop()
+        private async Task HandleJob(Func<Job> dequeueJob, CancellationToken stopToken)
         {
             try
             {
-                await _jobQueueReadyEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
-
-                while (!_disposeCancellationToken.IsCancellationRequested)
-                {
-                    TrackSafe(_diagnostics.TrackReaderLoopIterationStarted, CreateStatus());
-
-                    _jobQueueReadyEvent.Reset();
-
-                    while (_jobQueue.CanDequeueJob())
-                    {
-                        await _gateEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
-                        HandleJob(_jobQueue.DequeueJob());
-                    }
-
-                    await _jobQueueReadyEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
-                }
+                await _gateEvent.WaitAsync(stopToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (_disposeCancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Reader loop gracefully stopped
+                var tcs = dequeueJob().TaskCompletionSource;
+                Task.Run(() =>
+                    tcs.SetException(new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>))));
+                return;
             }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackUnexpectedException,
-                    "Unexpected reader loop exception: " +
-                    $"jobQueueSize={_jobQueue.Size}; processingMessages={_processingMessages}; processingBytes={_processingBytes}",
-                    ex);
-            }
-        }
 
-        private void HandleJob(Job job)
-        {
+            var job = dequeueJob();
             var publishArgs = new PublishArgs(job.Exchange, job.RoutingKey, job.Body, job.Properties);
             TrackSafe(_diagnostics.TrackJobStarting, publishArgs, CreateStatus(), job.Stopwatch.Elapsed);
 
@@ -196,14 +171,12 @@ namespace RabbitMqAsyncPublisher
 
             var job = new Job(exchange, routingKey, body, properties, cancellationToken,
                 new TaskCompletionSource<TResult>(), Stopwatch.StartNew());
-            var tryCancelJob = _jobQueue.Enqueue(job);
+            var tryCancelJob = _publishLoop.Enqueue(job);
 
             TrackSafe(_diagnostics.TrackJobEnqueued,
                 new PublishArgs(exchange, routingKey, body, properties),
-                new AsyncPublisherWithBufferStatus(_jobQueue.Size, _processingMessages, _processingBytes)
+                CreateStatus()
             );
-
-            _jobQueueReadyEvent.Set();
 
             return WaitForPublishCompletedOrCancelled(job, tryCancelJob, cancellationToken);
         }
@@ -248,32 +221,32 @@ namespace RabbitMqAsyncPublisher
             _decorated.Dispose();
 
             // ReSharper disable once MethodSupportsCancellation
-            _readerLoopTask.Wait();
+            _publishLoop.StopAsync().Wait();
 
-            while (_jobQueue.CanDequeueJob())
-            {
-                var job = _jobQueue.DequeueJob();
-
-                // ReSharper disable once MethodSupportsCancellation
-                Task.Run(() =>
-                {
-                    var ex = new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
-                    TrackSafe(_diagnostics.TrackJobFailed,
-                        new PublishArgs(job.Exchange, job.RoutingKey, job.Body, job.Properties),
-                        CreateStatus(),
-                        job.Stopwatch.Elapsed,
-                        ex);
-                    job.TaskCompletionSource.TrySetException(
-                        new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>)));
-                });
-            }
+            // while (_jobQueue.CanDequeueJob())
+            // {
+            //     var job = _jobQueue.DequeueJob();
+            //
+            //     // ReSharper disable once MethodSupportsCancellation
+            //     Task.Run(() =>
+            //     {
+            //         var ex = new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>));
+            //         TrackSafe(_diagnostics.TrackJobFailed,
+            //             new PublishArgs(job.Exchange, job.RoutingKey, job.Body, job.Properties),
+            //             CreateStatus(),
+            //             job.Stopwatch.Elapsed,
+            //             ex);
+            //         job.TaskCompletionSource.TrySetException(
+            //             new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>)));
+            //     });
+            // }
 
             TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
         }
 
         private AsyncPublisherWithBufferStatus CreateStatus()
         {
-            return new AsyncPublisherWithBufferStatus(_jobQueue.Size, _processingMessages, _processingBytes);
+            return new AsyncPublisherWithBufferStatus(_publishLoop.QueueSize, _processingMessages, _processingBytes);
         }
 
         private readonly struct Job
@@ -298,71 +271,6 @@ namespace RabbitMqAsyncPublisher
                 TaskCompletionSource = taskCompletionSource;
                 Stopwatch = stopwatch;
             }
-        }
-    }
-    
-    internal class JobQueue<TJob>
-    {
-        private readonly LinkedList<TJob> _queue = new LinkedList<TJob>();
-        private volatile int _size;
-
-        public int Size => _size;
-
-        public Func<bool> Enqueue(TJob job)
-        {
-            LinkedListNode<TJob> queueNode;
-
-            Interlocked.Increment(ref _size);
-
-            lock (_queue)
-            {
-                queueNode = _queue.AddLast(job);
-            }
-
-            return () => TryRemoveJob(queueNode);
-        }
-
-        private bool TryRemoveJob(LinkedListNode<TJob> jobNode)
-        {
-            lock (_queue)
-            {
-                if (jobNode.List is null)
-                {
-                    return false;
-                }
-
-                _queue.Remove(jobNode);
-            }
-
-            Interlocked.Decrement(ref _size);
-            return true;
-        }
-
-        public bool CanDequeueJob()
-        {
-            lock (_queue)
-            {
-                return _queue.Count > 0;
-            }
-        }
-
-        public TJob DequeueJob()
-        {
-            TJob job;
-
-            lock (_queue)
-            {
-                if (_queue.Count == 0)
-                {
-                    throw new InvalidOperationException("Job queue is empty.");
-                }
-
-                job = _queue.First.Value;
-                _queue.RemoveFirst();
-            }
-
-            Interlocked.Decrement(ref _size);
-            return job;
         }
     }
 }
