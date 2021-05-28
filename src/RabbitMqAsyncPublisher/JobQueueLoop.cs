@@ -65,7 +65,24 @@ namespace RabbitMqAsyncPublisher
 
                     while (_jobQueue.CanDequeueJob())
                     {
-                        await _handleJob(() => _jobQueue.DequeueJob(), _stopCancellationToken);
+                        try
+                        {
+                            await _handleJob(() => _jobQueue.DequeueJob(), _stopCancellationToken)
+                                .ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (_stopCancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            TrackSafe(_diagnostics.TrackUnexpectedException,
+                                $"[CRITICAL] Unexpected exception in job queue loop '{typeof(TJob).Name}' iteration", ex);
+                            
+                            // Not expected to happen in production, safety measure if it happens for some reason, to avoid burning CPU. 
+                            // ReSharper disable once MethodSupportsCancellation
+                            await Task.Delay(TimeSpan.FromSeconds(1));
+                        }
                     }
 
                     await _jobQueueReadyEvent.WaitAsync(_stopCancellationToken).ConfigureAwait(false);
@@ -78,7 +95,7 @@ namespace RabbitMqAsyncPublisher
             catch (Exception ex)
             {
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Unexpected exception in job queue loop '{GetType().Name}': jobQueueSize={_jobQueue.Size}",
+                    $"[CRITICAL] Unexpected exception in job queue loop '{typeof(TJob).Name}': jobQueueSize={_jobQueue.Size}",
                     ex);
 
                 // TODO: ? Move publisher to state when it throws on each attempt to publish a message
@@ -93,7 +110,8 @@ namespace RabbitMqAsyncPublisher
                 if (!_stopCancellation.IsCancellationRequested)
                 {
                     _jobQueue.Complete();
-                    _jobQueueReadyEvent.Set();
+                    // ReSharper disable once MethodSupportsCancellation
+                    _jobQueueReadyEvent.SetAsync().Wait();
 
                     _stopCancellation.Cancel();
                     _stopCancellation.Dispose();

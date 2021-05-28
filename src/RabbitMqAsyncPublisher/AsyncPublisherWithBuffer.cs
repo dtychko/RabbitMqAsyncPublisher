@@ -51,11 +51,11 @@ namespace RabbitMqAsyncPublisher
             _publishLoop = new JobQueueLoop<PublishJob>(HandlePublishJobAsync, _diagnostics);
         }
 
-        private async Task HandlePublishJobAsync(Func<PublishJob> dequeueJob, CancellationToken stopToken)
+        private async Task HandlePublishJobAsync(Func<PublishJob> dequeueJob, CancellationToken _)
         {
             try
             {
-                await _gateEvent.WaitAsync(stopToken).ConfigureAwait(false);
+                await _gateEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -63,11 +63,16 @@ namespace RabbitMqAsyncPublisher
 #pragma warning disable 4014
                 Task.Run(() =>
                         tcs.SetException(new ObjectDisposedException(nameof(AsyncPublisherWithBuffer<TResult>))),
-                    stopToken);
+                    _disposeCancellationToken);
 #pragma warning restore 4014
                 return;
             }
 
+            HandlePublishJob(dequeueJob);
+        }
+
+        private void HandlePublishJob(Func<PublishJob> dequeueJob)
+        {
             var publishJob = dequeueJob();
             TrackSafe(_diagnostics.TrackJobStarting, publishJob.Args, CreateStatus(), publishJob.Stopwatch.Elapsed);
 

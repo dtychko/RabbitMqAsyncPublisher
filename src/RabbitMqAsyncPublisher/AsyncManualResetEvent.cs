@@ -1,5 +1,4 @@
-﻿using System;
-using System.Threading;
+﻿using System.Threading;
 using System.Threading.Tasks;
 
 namespace RabbitMqAsyncPublisher
@@ -39,13 +38,18 @@ namespace RabbitMqAsyncPublisher
 
         public void Set()
         {
+            SetAsync();
+        }
+
+        public Task SetAsync()
+        {
             var capturedSource = _taskCompletionSource;
             if (capturedSource.Task.IsCompleted)
             {
-                return;
+                return Task.CompletedTask;
             }
 
-            Task.Run(() => capturedSource.TrySetResult(true));
+            return Task.Run(() => capturedSource.TrySetResult(true));
         }
 
         public void Reset()

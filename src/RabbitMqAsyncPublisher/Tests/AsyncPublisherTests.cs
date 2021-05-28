@@ -58,8 +58,6 @@ namespace Tests
 
                 await SpinWaitFor(() => sources.Count == tasks.Length);
 
-                var sourcesArray = sources.ToArray();
-
                 Task.Run(() => model.FireBasicAcks(new BasicAckEventArgs {DeliveryTag = 2, Multiple = false}));
                 (await tasks[1]).ShouldBeTrue();
                 tasks.Count(x => !x.IsCompleted).ShouldBe(5);
