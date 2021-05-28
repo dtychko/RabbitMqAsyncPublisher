@@ -17,23 +17,17 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public Task<bool> WaitAsync(CancellationToken cancellationToken = default)
-        {
-            return WaitAsync(-1, cancellationToken);
-        }
-
-        public async Task<bool> WaitAsync(int millisecondsTimeout, CancellationToken cancellationToken)
+        public async Task WaitAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var capturedSource = _taskCompletionSource;
             var result = await Task.WhenAny(
                 capturedSource.Task,
-                Task.Delay(millisecondsTimeout, cancellationToken)
+                Task.Delay(-1, cancellationToken)
             ).ConfigureAwait(false);
 
             await result.ConfigureAwait(false);
-            return result == capturedSource.Task;
         }
 
         public void Set()
