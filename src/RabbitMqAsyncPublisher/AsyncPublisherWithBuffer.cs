@@ -65,12 +65,11 @@ namespace RabbitMqAsyncPublisher
                 return;
             }
 
-            HandlePublishJob(dequeueJob);
+            HandlePublishJob(dequeueJob());
         }
 
-        private void HandlePublishJob(Func<PublishJob<TResult>> dequeueJob)
+        private void HandlePublishJob(PublishJob<TResult> publishJob)
         {
-            var publishJob = dequeueJob();
             TrackSafe(_diagnostics.TrackPublishJobStarting, publishJob.Args, CreateStatus());
 
             if (_disposeCancellationToken.IsCancellationRequested)

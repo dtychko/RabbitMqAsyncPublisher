@@ -183,5 +183,120 @@ namespace Tests
                 sources.Count.ShouldBe(8);
             }
         }
+
+        [Test]
+        public async Task ShouldPublishConcurrentlyWhenRetriesCompleted()
+        {
+            var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
+            using (var publisher = CreateTarget(() =>
+            {
+                var tcs = new TaskCompletionSource<bool>();
+                sources.Enqueue(tcs);
+                return tcs.Task;
+            }))
+            {
+                var retryingTask = TestPublish(publisher);
+                await SpinWaitFor(() => sources.Count == 1);
+
+                await DequeueAndSetResultAsync(sources, false);
+
+                await SpinWaitFor(() => sources.Count == 1);
+
+                var t1 = TestPublish(publisher);
+                var t2 = TestPublish(publisher);
+                var t3 = TestPublish(publisher);
+
+                await Task.Delay(100);
+                sources.Count.ShouldBe(1);
+
+                await DequeueAndSetResultAsync(sources, true);
+                await retryingTask;
+
+                await SpinWaitFor(() => sources.Count == 3);
+
+                await DequeueAndSetResultAsync(sources, true);
+                await DequeueAndSetResultAsync(sources, true);
+                await DequeueAndSetResultAsync(sources, true);
+
+                (await t1).Retries.ShouldBe(0);
+                (await t2).Retries.ShouldBe(0);
+                (await t3).Retries.ShouldBe(0);
+            }
+        }
+
+        [Test]
+        public async Task ShouldCancel()
+        {
+            var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
+            using (var publisher = CreateTarget(() =>
+            {
+                var tcs = new TaskCompletionSource<bool>();
+                sources.Enqueue(tcs);
+                return tcs.Task;
+            }))
+            {
+                var retryingTaskCts = new CancellationTokenSource();
+                var retryingTask = TestPublish(publisher, cancellationToken: retryingTaskCts.Token);
+
+                await SpinWaitFor(() => sources.Count == 1);
+
+                await DequeueAndSetResultAsync(sources, false);
+                await SpinWaitFor(() => sources.Count == 1);
+
+                var waitingTaskCts = new CancellationTokenSource();
+                var waitingTask = TestPublish(publisher, cancellationToken: waitingTaskCts.Token);
+                waitingTaskCts.CancelAfter(100);
+
+                await Task.WhenAny(waitingTask);
+                waitingTask.IsCanceled.ShouldBeTrue();
+
+                retryingTaskCts.Cancel();
+                await DequeueAndSetResultAsync(sources, false);
+
+                await Task.WhenAny(retryingTask);
+                retryingTask.IsCanceled.ShouldBeTrue();
+
+                var immediatelyCancelledTask = TestPublish(publisher, cancellationToken: new CancellationToken(true));
+                immediatelyCancelledTask.IsCanceled.ShouldBeTrue();
+            }
+        }
+
+        [Test]
+        public async Task ShouldDispose()
+        {
+            var sources = new ConcurrentQueue<TaskCompletionSource<bool>>();
+            using (var publisher = CreateTarget(() =>
+            {
+                var tcs = new TaskCompletionSource<bool>();
+                sources.Enqueue(tcs);
+                return tcs.Task;
+            }))
+            {
+                var retryingTask = TestPublish(publisher);
+
+                await SpinWaitFor(() => sources.Count == 1);
+
+                await DequeueAndSetResultAsync(sources, false);
+                await SpinWaitFor(() => sources.Count == 1);
+
+                var waitingTask = TestPublish(publisher);
+
+                await Task.Delay(100);
+
+                publisher.Dispose();
+
+                await Task.WhenAny(waitingTask);
+                waitingTask.IsFaulted.ShouldBeTrue();
+                waitingTask.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
+
+                await DequeueAndSetResultAsync(sources, false);
+
+                await Task.WhenAny(retryingTask);
+                retryingTask.IsFaulted.ShouldBeTrue();
+                retryingTask.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
+
+                Assert.Throws<ObjectDisposedException>(() => TestPublish(publisher));
+            }
+        }
     }
 }
