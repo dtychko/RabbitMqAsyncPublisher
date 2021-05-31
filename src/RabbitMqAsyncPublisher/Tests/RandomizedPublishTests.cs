@@ -84,7 +84,7 @@ namespace Tests
                                     var messageIndex = Interlocked.Increment(ref counter);
                                     var messageTag = $"Message #{messageIndex}";
                                     var body = Encoding.UTF8.GetBytes(messageTag);
-                                    var testBasicProperties = new TestMessageProperties {TestTag = messageTag};
+                                    var testBasicProperties = new TestMessageProperties(messageTag);
                                     var task = retryingPublisher.PublishAsync(
                                         "test-exchange", "no-routing", body, testBasicProperties, default,
                                         cancellationToken);
@@ -169,8 +169,8 @@ namespace Tests
 
         /// <remarks>
         /// By the end of the test all messages should be successfully published (with or without retries).
-        /// This method checks that test model received all necessary <see cref="TestRecoverableRabbitModel.BasicPublish"/> calls,
-        /// was able to complete them and fire ACK messages via <see cref="TestRecoverableRabbitModel.BasicAcks"/>. 
+        /// This method checks that test model received all necessary <see cref="TestNonRecoverableRabbitModel.BasicPublish"/> calls,
+        /// was able to complete them and fire ACK messages via <see cref="TestNonRecoverableRabbitModel.BasicAcks"/>. 
         /// </remarks>
         private static void AssertAllPublishesAreAcked(
             IReadOnlyCollection<PublishRequest> acks,
@@ -178,16 +178,14 @@ namespace Tests
         {
             var unackedTags = new List<string>();
 
-            // Console.WriteLine($" >> Acks: {string.Join(",", acks.Select(a => GetMessageTag(a.Properties)))}");
+            Console.WriteLine($" >> Acks: {string.Join(",", acks.Select(a => GetMessageTag(a.Properties)))}");
 
             foreach (var pt in publishTasks)
             {
-                throw new NotImplementedException();
-                // TODO: Pass message tag in another way
-                // if (acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) == 0)
-                // {
-                //     unackedTags.Add(pt.MessageTag);
-                // }
+                if (acks.Count(a => pt.MessageTag == GetMessageTag(a.Properties)) == 0)
+                {
+                    unackedTags.Add(pt.MessageTag);
+                }
             }
 
             if (unackedTags.Any())

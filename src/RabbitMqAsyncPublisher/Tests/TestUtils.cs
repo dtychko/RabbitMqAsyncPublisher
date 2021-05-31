@@ -55,6 +55,11 @@ namespace Tests
         
         public static string GetMessageTag(MessageProperties properties) => ((TestMessageProperties) properties).TestTag;
 
+        public static string GetMessageTag(IBasicProperties properties) =>
+            properties.Headers.TryGetValue(TestMessageProperties.TagName, out var value)
+                ? value.ToString()
+                : null;
+
         public static bool WaitFor(
             Func<bool> predicate,
             TimeSpan? timeout = null,
