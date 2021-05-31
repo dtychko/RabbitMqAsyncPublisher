@@ -30,7 +30,7 @@ namespace RabbitMqAsyncPublisher
         public ShutdownEventArgs CloseReason => Value.CloseReason;
 
         public AutoRecoveryConnection(IConnection connection)
-            : this(connection, AutoRecoveryEmptyDiagnostics.NoDiagnostics)
+            : this(connection, AutoRecoveryDiagnostics.NoDiagnostics)
         {
         }
 
@@ -123,7 +123,7 @@ namespace RabbitMqAsyncPublisher
         public ShutdownEventArgs CloseReason => Value.CloseReason;
 
         public AutoRecoveryModel(IModel model)
-            : this(model, AutoRecoveryEmptyDiagnostics.NoDiagnostics)
+            : this(model, AutoRecoveryDiagnostics.NoDiagnostics)
         {
         }
 

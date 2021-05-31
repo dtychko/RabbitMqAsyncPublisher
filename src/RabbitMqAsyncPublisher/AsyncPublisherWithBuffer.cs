@@ -177,32 +177,12 @@ namespace RabbitMqAsyncPublisher
 
         public void Dispose()
         {
-            lock (_disposeCancellationSource)
-            {
-                if (_disposeCancellationSource.IsCancellationRequested)
-                {
-                    return;
-                }
+            DisposeCore(GetType(), OnDispose, _diagnostics, CreateStatus, _disposeCancellationSource);
 
-                _disposeCancellationSource.Cancel();
-                _disposeCancellationSource.Dispose();
-            }
-
-            TrackSafe(_diagnostics.TrackDisposeStarted, CreateStatus());
-            var stopwatch = Stopwatch.StartNew();
-
-            try
+            async Task OnDispose()
             {
                 _decorated.Dispose();
-
-                // ReSharper disable once MethodSupportsCancellation
-                _publishLoop.StopAsync().Wait();
-
-                TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
-            }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackUnexpectedException, $"Unable to dispose publisher '{GetType().Name}'", ex);
+                await _publishLoop.StopAsync().ConfigureAwait(false);
             }
         }
 

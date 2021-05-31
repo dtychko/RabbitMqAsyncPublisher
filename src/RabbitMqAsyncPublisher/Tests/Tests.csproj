@@ -84,13 +84,13 @@
         </Reference>
     </ItemGroup>
     <ItemGroup>
+        <Compile Include="AsyncPublisherCombinedTest.cs" />
         <Compile Include="AsyncPublisherTests.cs" />
         <Compile Include="AsyncPublisherWithBufferTests.cs" />
         <Compile Include="AsyncPublisherWithRetriesTests.cs" />
         <Compile Include="AutoRecoveryTests.cs" />
         <Compile Include="TestAutoRecoveryResource.cs" />
         <Compile Include="TestMessageProperties.cs" />
-        <Compile Include="TestDiagnostics.cs" />
         <Compile Include="TestNonRecoverableConnection.cs" />
         <Compile Include="TestNonRecoverableRabbitModel.cs" />
         <Compile Include="RandomizedPublishTests.cs" />

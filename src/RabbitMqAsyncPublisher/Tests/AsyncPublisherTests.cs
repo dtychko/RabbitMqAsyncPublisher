@@ -384,7 +384,7 @@ namespace Tests
 
         [Test]
         [Explicit]
-        [Timeout(10000)]
+        [Timeout(20000)]
         public async Task Perf()
         {
             using (var publisher = CreateTarget(req =>
@@ -398,19 +398,17 @@ namespace Tests
                 return tcs.Task;
             }))
             {
-                var tasks = new List<Task<bool>>();
-
                 for (var i = 0; i < 1000; i++)
                 {
+                    var tasks = new List<Task<bool>>();
+
                     for (var j = 0; j < 1000; j++)
                     {
                         tasks.Add(TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[100])));
                     }
 
-                    Thread.SpinWait(10);
+                    await Task.WhenAll(tasks);
                 }
-
-                await Task.WhenAll(tasks);
             }
         }
     }

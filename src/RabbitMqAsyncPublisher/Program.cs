@@ -86,7 +86,7 @@ namespace RabbitMqAsyncPublisher
 
             using (var publisherProxy = new AsyncPublisherProxy<bool>())
             using (var retryingPublisher = new AsyncPublisherWithRetries(
-                publisherProxy, TimeSpan.FromSeconds(3), new AsyncPublisherWithRetriesConsoleDiagnostics()))
+                publisherProxy, TimeSpan.FromSeconds(3)))
             {
                 using (AutoRecovery.StartConnection(
                     connectionFactory,

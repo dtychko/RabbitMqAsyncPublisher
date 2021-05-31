@@ -322,20 +322,18 @@ namespace Tests
             });
             var publisher = CreateTarget(publisherMock, 10);
 
-            var tasks = new List<Task<bool>>();
 
-            for (var i = 0; i < 1000; i++)
+            for (var i = 0; i < 10000; i++)
             {
-                for (var j = 0; j < 1000; j++)
+                var tasks = new List<Task<bool>>();
+
+                for (var j = 0; j < 100; j++)
                 {
                     tasks.Add(TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[100])));
-                    // tasks.Add(TestPublish(publisherMock, new ReadOnlyMemory<byte>(new byte[100])));
                 }
 
-                Thread.SpinWait(10);
+                await Task.WhenAll(tasks);
             }
-
-            await Task.WhenAll(tasks);
         }
 
         private static Task<T> TestPublish<T>(IAsyncPublisher<T> publisher,

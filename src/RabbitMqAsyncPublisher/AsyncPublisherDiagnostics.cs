@@ -2,7 +2,12 @@
 
 namespace RabbitMqAsyncPublisher
 {
-    public interface IPublisherDiagnostics: IUnexpectedExceptionDiagnostics
+    public interface IUnexpectedExceptionDiagnostics
+    {
+        void TrackUnexpectedException(string message, Exception ex);
+    }
+
+    public interface IPublisherDiagnostics : IUnexpectedExceptionDiagnostics
     {
         void TrackPublishStarted(PublishArgs publishArgs);
 
@@ -13,7 +18,14 @@ namespace RabbitMqAsyncPublisher
         void TrackPublishFailed(PublishArgs publishArgs, TimeSpan duration, Exception ex);
     }
 
-    public interface IQueueBasedPublisherDiagnostics<in TStatus> : IPublisherDiagnostics
+    public interface IPublisherDiagnostics<in TStatus> : IPublisherDiagnostics
+    {
+        void TrackDisposeStarted(TStatus status);
+
+        void TrackDisposeCompleted(TStatus status, TimeSpan duration);
+    }
+
+    public interface IQueueBasedPublisherDiagnostics<in TStatus> : IPublisherDiagnostics<TStatus>
     {
         void TrackPublishJobEnqueued(PublishArgs publishArgs, TStatus status);
     }
@@ -38,16 +50,11 @@ namespace RabbitMqAsyncPublisher
         void TrackAckJobStarted(AckArgs ackArgs, AsyncPublisherStatus status);
 
         void TrackAckJobCompleted(AckArgs ackArgs, AsyncPublisherStatus status, TimeSpan duration);
-
-        void TrackDisposeStarted(AsyncPublisherStatus status);
-
-        void TrackDisposeCompleted(AsyncPublisherStatus status, TimeSpan duration);
     }
 
     public class AsyncPublisherDiagnostics : IAsyncPublisherDiagnostics
     {
-        public static readonly IAsyncPublisherDiagnostics NoDiagnostics =
-            new AsyncPublisherDiagnostics();
+        public static readonly IAsyncPublisherDiagnostics NoDiagnostics = new AsyncPublisherDiagnostics();
 
         protected AsyncPublisherDiagnostics()
         {

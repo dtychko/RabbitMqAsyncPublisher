@@ -17,8 +17,7 @@ namespace RabbitMqAsyncPublisher
             {
                 var ex = new ObjectDisposedException(publisherType.Name);
                 TrackSafe(diagnostics.TrackUnexpectedException,
-                    $"Publisher '{publisherType.Name}' is already disposed ({publishArgs})",
-                    ex);
+                    $"Publisher '{publisherType.Name}' is already disposed ({publishArgs})", ex);
 
                 throw ex;
             }
@@ -78,6 +77,37 @@ namespace RabbitMqAsyncPublisher
             }
 
             return await jobTask.ConfigureAwait(false);
+        }
+
+        public static void DisposeCore<TStatus>(Type publisherType, Func<Task> dispose,
+            IPublisherDiagnostics<TStatus> diagnostics, Func<TStatus> createStatus,
+            CancellationTokenSource disposeCancellationSource)
+        {
+            lock (disposeCancellationSource)
+            {
+                if (disposeCancellationSource.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                disposeCancellationSource.Cancel();
+                disposeCancellationSource.Dispose();
+            }
+
+            TrackSafe(diagnostics.TrackDisposeStarted, createStatus());
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                dispose().Wait();
+
+                TrackSafe(diagnostics.TrackDisposeCompleted, createStatus(), stopwatch.Elapsed);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(diagnostics.TrackUnexpectedException,
+                    $"Unable to dispose publisher '{publisherType.Name}'", ex);
+            }
         }
 
         public static void ScheduleTrySetResult<TResult>(TaskCompletionSource<TResult> source, TResult result)

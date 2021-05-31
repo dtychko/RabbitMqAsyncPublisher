@@ -11,7 +11,7 @@ namespace RabbitMqAsyncPublisher
         private readonly Func<Func<TJob>, Task> _handleJob;
         private readonly IUnexpectedExceptionDiagnostics _diagnostics;
 
-        private readonly JobQueue<TJob> _jobQueue = new JobQueue<TJob>();
+        private readonly LinkedListQueue<TJob> _jobQueue = new LinkedListQueue<TJob>();
         private readonly AsyncManualResetEvent _jobQueueReadyEvent = new AsyncManualResetEvent(false);
         private readonly Task _jobQueueTask;
 

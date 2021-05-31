@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -23,15 +24,19 @@ namespace Tests
             ThreadPool.SetMinThreads(100, 10);
         }
 
-        private static IAsyncPublisher<RetryingPublisherResult> CreateTarget(Func<Task<bool>> handlePublish)
+        private static IAsyncPublisher<RetryPublishResult> CreateTarget(Func<string, Task<bool>> handlePublish)
         {
             return CreateTarget(new AsyncPublisherMock<bool>(handlePublish));
         }
 
-        private static IAsyncPublisher<RetryingPublisherResult> CreateTarget(IAsyncPublisher<bool> decorated)
+        private static IAsyncPublisher<RetryPublishResult> CreateTarget(Func<Task<bool>> handlePublish)
         {
-            return new QueueBasedAsyncPublisherWithRetries(decorated, TimeSpan.FromMilliseconds(0));
-            // return new AsyncPublisherWithRetries(decorated, TimeSpan.FromMilliseconds(0));
+            return CreateTarget(new AsyncPublisherMock<bool>(handlePublish));
+        }
+
+        private static IAsyncPublisher<RetryPublishResult> CreateTarget(IAsyncPublisher<bool> decorated)
+        {
+            return new AsyncPublisherWithRetries(decorated, TimeSpan.FromMilliseconds(0));
         }
 
         [Test]
@@ -296,6 +301,105 @@ namespace Tests
                 retryingTask.Exception.InnerException.ShouldBeOfType<ObjectDisposedException>();
 
                 Assert.Throws<ObjectDisposedException>(() => TestPublish(publisher));
+            }
+        }
+
+        [Test]
+        [TestCase(10000, 12345)]
+        [TestCase(10000, 54321)]
+        public async Task RandomTest(int messageCount, int seed)
+        {
+            var random = new Random(seed);
+            var messages = new ConcurrentQueue<(string exchange, ReadOnlyMemory<byte> body, int retries)>();
+            var handlers = new Dictionary<string, ConcurrentQueue<(int iterationsToSpin, bool result)>>();
+            for (var i = 0; i < messageCount; i++)
+            {
+                var exchange = $"exchange#{i}";
+                var retries = Math.Max(0, random.Next(10) - 7);
+
+                messages.Enqueue((
+                    exchange,
+                    body: new ReadOnlyMemory<byte>(new byte[random.Next(1000)]),
+                    retries
+                ));
+
+                var queue = new ConcurrentQueue<(int iterationsToSpin, bool result)>();
+                for (var j = 0; j < retries; j++)
+                {
+                    queue.Enqueue((iterationsToSpin: random.Next(100), result: false));
+                }
+
+                queue.Enqueue((iterationsToSpin: random.Next(100), result: true));
+
+                handlers[exchange] = queue;
+            }
+
+            using (var publisher = CreateTarget(exchange =>
+            {
+                if (!handlers[exchange].TryDequeue(out var item))
+                {
+                    throw new InvalidOperationException();
+                }
+
+                var tcs = new TaskCompletionSource<bool>();
+                Task.Run(() =>
+                {
+                    Thread.SpinWait(item.iterationsToSpin);
+                    tcs.SetResult(item.result);
+                });
+                return tcs.Task;
+            }))
+            {
+                var tasks = new List<Task<RetryPublishResult>>();
+                var expectedResults = new List<RetryPublishResult>();
+
+                while (messages.TryDequeue(out var item))
+                {
+                    tasks.Add(publisher.PublishAsync(item.exchange, string.Empty, item.body, default));
+                    expectedResults.Add(new RetryPublishResult(true, item.retries));
+                }
+
+                var actualResults = await Task.WhenAll(tasks);
+
+                for (var i = 0; i < actualResults.Length; i++)
+                {
+                    if (actualResults[i].Retries != expectedResults[i].Retries)
+                    {
+                        Console.WriteLine(i);
+                    }
+
+                    actualResults[i].Retries.ShouldBe(expectedResults[i].Retries);
+                }
+            }
+        }
+
+        [Test]
+        [Explicit]
+        [Timeout(10000)]
+        public async Task Perf()
+        {
+            using (var publisher = CreateTarget(() =>
+            {
+                var tcs = new TaskCompletionSource<bool>();
+                Task.Run(() =>
+                {
+                    Thread.SpinWait(10);
+                    tcs.SetResult(true);
+                });
+                return tcs.Task;
+            }))
+            {
+                for (var i = 0; i < 10000; i++)
+                {
+                    var tasks = new List<Task<RetryPublishResult>>();
+
+                    for (var j = 0; j < 100; j++)
+                    {
+                        tasks.Add(TestPublish(publisher, new ReadOnlyMemory<byte>(new byte[100])));
+                    }
+
+                    await Task.WhenAll(tasks);
+                }
             }
         }
     }

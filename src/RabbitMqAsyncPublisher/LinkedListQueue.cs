@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace RabbitMqAsyncPublisher
 {
-    internal class JobQueue<TJob>
+    internal class LinkedListQueue<TJob>
     {
         private readonly LinkedList<TJob> _queue = new LinkedList<TJob>();
         private volatile int _size;
@@ -70,6 +70,19 @@ namespace RabbitMqAsyncPublisher
             }
 
             return job;
+        }
+
+        public TJob Peek()
+        {
+            lock (_queue)
+            {
+                if (_queue.Count == 0)
+                {
+                    throw new InvalidOperationException("Job queue is empty");
+                }
+
+                return _queue.First.Value;
+            }
         }
 
         public void Complete()

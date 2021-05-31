@@ -99,7 +99,7 @@ namespace RabbitMqAsyncPublisher
             IAutoRecoveryDiagnostics diagnostics = null)
             : this(createResource, componentFactories,
                 (retryNumber, cancellationToken) => Task.Delay(reconnectDelay(retryNumber), cancellationToken),
-                diagnostics ?? AutoRecoveryEmptyDiagnostics.NoDiagnostics)
+                diagnostics ?? AutoRecoveryDiagnostics.NoDiagnostics)
         {
         }
 

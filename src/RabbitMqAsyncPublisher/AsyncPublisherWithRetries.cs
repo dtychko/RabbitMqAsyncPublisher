@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -7,220 +6,347 @@ using RabbitMQ.Client.Exceptions;
 
 namespace RabbitMqAsyncPublisher
 {
-    public class AsyncPublisherWithRetries : IAsyncPublisher<RetryingPublisherResult>
+    using static AsyncPublisherUtils;
+
+    public class AsyncPublisherWithRetries : IAsyncPublisher<RetryPublishResult>
     {
+        private static readonly Func<Exception, int, bool> RetryOnAlreadyClosedException =
+            (ex, _) => ex is AlreadyClosedException;
+
+        private static readonly Func<int, bool> RetryOnNack = _ => true;
+
         private readonly IAsyncPublisher<bool> _decorated;
-
-        // TODO: replace with attempt->TimeSpan function
         private readonly TimeSpan _retryDelay;
+        private readonly Func<Exception, int, bool> _shouldRetryOnException;
+        private readonly Func<int, bool> _shouldRetryOnNack;
         private readonly IAsyncPublisherWithRetriesDiagnostics _diagnostics;
-        private readonly LinkedList<QueueEntry> _queue = new LinkedList<QueueEntry>();
-        private readonly ManualResetEventSlim _canPublish = new ManualResetEventSlim(true);
-        private bool _isDisposed;
 
-        public AsyncPublisherWithRetries(
-            IAsyncPublisher<bool> decorated,
-            TimeSpan retryDelay)
-            : this(decorated, retryDelay, EmptyDiagnostics.Instance)
-        {
-        }
+        private readonly JobQueueLoop<PublishJob<RetryPublishResult>> _publishLoop;
+
+        private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
+
+        private readonly LinkedListQueue<Publishing> _publishingQueue = new LinkedListQueue<Publishing>();
+
+        private readonly CancellationTokenSource _disposeCancellationSource = new CancellationTokenSource();
+        private readonly CancellationToken _disposeCancellationToken;
 
         public AsyncPublisherWithRetries(
             IAsyncPublisher<bool> decorated,
             TimeSpan retryDelay,
-            IAsyncPublisherWithRetriesDiagnostics diagnostics)
+            Func<Exception, int, bool> shouldRetryOnException = null,
+            Func<int, bool> shouldRetryOnNack = null,
+            IAsyncPublisherWithRetriesDiagnostics diagnostics = null)
         {
-            _decorated = decorated;
+            _decorated = decorated ?? throw new ArgumentNullException(nameof(decorated));
             _retryDelay = retryDelay;
-            _diagnostics = diagnostics;
+            _shouldRetryOnException = shouldRetryOnException ?? RetryOnAlreadyClosedException;
+            _shouldRetryOnNack = shouldRetryOnNack ?? RetryOnNack;
+            _diagnostics = diagnostics ?? AsyncPublisherWithRetriesDiagnostics.NoDiagnostics;
+
+            _disposeCancellationToken = _disposeCancellationSource.Token;
+
+            _publishLoop =
+                new JobQueueLoop<PublishJob<RetryPublishResult>>(HandlePublishJobAsync,
+                    AsyncPublisherDiagnostics.NoDiagnostics);
         }
 
-        public async Task<RetryingPublisherResult> PublishAsync(string exchange, string routingKey,
-            ReadOnlyMemory<byte> body, MessageProperties properties, string correlationId = null,
-            CancellationToken cancellationToken = default)
+        private async Task HandlePublishJobAsync(Func<PublishJob<RetryPublishResult>> dequeueJob)
         {
-            ThrowIfDisposed();
-
-            if (!_canPublish.IsSet)
+            try
             {
-                _diagnostics.TrackCanPublishWait(new PublishArgs(exchange, routingKey, body, properties,
-                    correlationId));
+                await _gateEvent.WaitAsync(_disposeCancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                var publishJob = dequeueJob();
+                var ex = new ObjectDisposedException(GetType().Name);
+                TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(), TimeSpan.Zero, ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+                return;
             }
 
-            _canPublish.Wait(cancellationToken);
-
-            using (StartPublishing(out var queueNode))
-            {
-                if (await TryPublishAsync(1, exchange, routingKey, body, properties, correlationId, cancellationToken)
-                    .ConfigureAwait(false))
-                {
-                    return RetryingPublisherResult.NoRetries;
-                }
-
-                _canPublish.Reset();
-                return await RetryAsync(queueNode, exchange, routingKey, body, properties, correlationId,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            HandlePublishJobWithRetriesAsync(dequeueJob());
         }
 
-        private IDisposable StartPublishing(out LinkedListNode<QueueEntry> queueNode)
+        private async void HandlePublishJobWithRetriesAsync(PublishJob<RetryPublishResult> publishJob)
         {
-            var addedQueueNode = AddLastSynced(new QueueEntry());
-            queueNode = addedQueueNode;
+            var currentPublishing = new Publishing(new TaskCompletionSource<bool>());
+            var tryRemoveCurrentPublishing = _publishingQueue.Enqueue(currentPublishing);
 
-            return new Disposable(() =>
-            {
-                RemoveSynced(addedQueueNode, () =>
-                {
-                    if (!_canPublish.IsSet)
-                    {
-                        _canPublish.Set();
-                    }
-                });
-
-                Task.Run(() => addedQueueNode.Value.CompletionSource.TrySetResult(true));
-            });
-        }
-
-        private async Task<RetryingPublisherResult> RetryAsync(
-            LinkedListNode<QueueEntry> queueNode,
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            MessageProperties properties,
-            string correlationId,
-            CancellationToken cancellationToken)
-        {
-            LinkedListNode<QueueEntry> nextQueueNode;
-
-            while ((nextQueueNode = GetFirstSynced()) != queueNode)
-            {
-                ThrowIfDisposed();
-
-                await Task.WhenAny(
-                    Task.Delay(-1, cancellationToken),
-                    nextQueueNode.Value.CompletionSource.Task
-                ).ConfigureAwait(false);
-            }
-
-            for (var attempt = 2;; attempt++)
-            {
-                ThrowIfDisposed();
-
-                _diagnostics.TrackRetryDelay(
-                    new PublishUnsafeAttemptArgs(exchange, routingKey, body, properties, attempt),
-                    _retryDelay
-                );
-
-                await Task.Delay(_retryDelay, cancellationToken).ConfigureAwait(false);
-
-                if (await TryPublishAsync(attempt, exchange, routingKey, body, properties, correlationId,
-                        cancellationToken)
-                    .ConfigureAwait(false))
-                {
-                    return new RetryingPublisherResult(attempt - 1);
-                }
-            }
-        }
-
-        private async Task<bool> TryPublishAsync(
-            int attempt,
-            string exchange,
-            string routingKey,
-            ReadOnlyMemory<byte> body,
-            MessageProperties properties,
-            string correlationId,
-            CancellationToken cancellationToken)
-        {
-            var args = new PublishUnsafeAttemptArgs(exchange, routingKey, body, properties, attempt);
-            _diagnostics.TrackPublishUnsafeAttempt(args);
+            TrackSafe(_diagnostics.TrackPublishJobStarted, publishJob.Args, CreateStatus());
             var stopwatch = Stopwatch.StartNew();
 
             try
             {
-                var acknowledged = await _decorated
-                    .PublishAsync(exchange, routingKey, body, properties, correlationId, cancellationToken)
-                    .ConfigureAwait(false);
-                _diagnostics.TrackPublishUnsafeAttemptCompleted(args, stopwatch.Elapsed, acknowledged);
-                return acknowledged;
-            }
-            catch (AlreadyClosedException ex)
-            {
-                _diagnostics.TrackPublishUnsafeAttemptFailed(args, stopwatch.Elapsed, ex);
+                // ReSharper disable once UseDeconstruction
+                var firstResult = await TryPublishAsync(publishJob, 1).ConfigureAwait(false);
+                if (firstResult.Completed)
+                {
+                    TrackSafe(_diagnostics.TrackPublishJobCompleted,
+                        publishJob.Args, CreateStatus(), stopwatch.Elapsed, firstResult.Acknowledged);
+                    ScheduleTrySetResult(publishJob.TaskCompletionSource,
+                        new RetryPublishResult(firstResult.Acknowledged, 0));
+                    return;
+                }
 
-                // TODO: Use callback to determine if publish should be retried
-                return false;
+                _gateEvent.Reset();
+
+                await WaitForPublishCouldBeRetried(publishJob, currentPublishing).ConfigureAwait(false);
+
+                for (var attempt = 2;; attempt++)
+                {
+                    await WaitForRetryDelay(publishJob).ConfigureAwait(false);
+
+                    // ReSharper disable once UseDeconstruction
+                    var retryResult = await TryPublishAsync(publishJob, attempt).ConfigureAwait(false);
+                    if (retryResult.Completed)
+                    {
+                        TrackSafe(_diagnostics.TrackPublishJobCompleted,
+                            publishJob.Args, CreateStatus(), stopwatch.Elapsed, firstResult.Acknowledged);
+                        ScheduleTrySetResult(publishJob.TaskCompletionSource,
+                            new RetryPublishResult(retryResult.Acknowledged, attempt - 1));
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                if (ex.CancellationToken == _disposeCancellationToken)
+                {
+                    var dex = new ObjectDisposedException(GetType().Name);
+                    TrackSafe(_diagnostics.TrackPublishJobFailed,
+                        publishJob.Args, CreateStatus(), stopwatch.Elapsed, dex);
+                    ScheduleTrySetException(publishJob.TaskCompletionSource, dex);
+                }
+                else
+                {
+                    TrackSafe(_diagnostics.TrackPublishJobCancelled,
+                        publishJob.Args, CreateStatus(), stopwatch.Elapsed);
+                    ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
+                }
             }
             catch (Exception ex)
             {
-                _diagnostics.TrackPublishUnsafeAttemptFailed(args, stopwatch.Elapsed, ex);
+                TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(), stopwatch.Elapsed, ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+            }
+            finally
+            {
+                tryRemoveCurrentPublishing();
+                ScheduleTrySetResult(currentPublishing.TaskCompletionSource, true);
+
+                if (_publishingQueue.Size == 0)
+                {
+                    _gateEvent.Set();
+                }
+            }
+        }
+
+        private async Task WaitForPublishCouldBeRetried(
+            PublishJob<RetryPublishResult> publishJob,
+            Publishing targetPublishing)
+        {
+            TaskCompletionSource<bool> tcs;
+
+            while ((tcs = _publishingQueue.Peek().TaskCompletionSource) != targetPublishing.TaskCompletionSource)
+            {
+                if (publishJob.CancellationToken.CanBeCanceled)
+                {
+                    using (var combinedToken =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            _disposeCancellationToken, publishJob.CancellationToken))
+                    {
+                        await Task.WhenAny(
+                            tcs.Task,
+                            Task.Delay(-1, combinedToken.Token)
+                        ).ConfigureAwait(false);
+
+                        _disposeCancellationToken.ThrowIfCancellationRequested();
+                        publishJob.CancellationToken.ThrowIfCancellationRequested();
+
+                        return;
+                    }
+                }
+
+                await Task.WhenAny(
+                    tcs.Task,
+                    Task.Delay(-1, _disposeCancellationToken)
+                ).ConfigureAwait(false);
+
+                _disposeCancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+
+        private async Task WaitForRetryDelay(PublishJob<RetryPublishResult> publishJob)
+        {
+            if (publishJob.CancellationToken.CanBeCanceled)
+            {
+                using (var combinedToken =
+                    CancellationTokenSource.CreateLinkedTokenSource(
+                        _disposeCancellationToken, publishJob.CancellationToken))
+                {
+                    // Using "Task.WhenAny" not to throw OperationCancelledException linked to "combinedToken" immediately.
+                    // We should throw this exception linked directly
+                    // to either "_disposeCancellationToken" or "publishJob.CancellationToken" 
+                    await Task.WhenAny(
+                        Task.Delay(_retryDelay, combinedToken.Token)
+                    ).ConfigureAwait(false);
+
+                    _disposeCancellationToken.ThrowIfCancellationRequested();
+                    publishJob.CancellationToken.ThrowIfCancellationRequested();
+
+                    return;
+                }
+            }
+
+            await Task.Delay(_retryDelay, _disposeCancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<(bool Completed, bool Acknowledged)> TryPublishAsync(
+            PublishJob<RetryPublishResult> publishJob, int attempt)
+        {
+            _disposeCancellationToken.ThrowIfCancellationRequested();
+            publishJob.CancellationToken.ThrowIfCancellationRequested();
+
+            TrackSafe(_diagnostics.TrackPublishAttemptStarted, publishJob.Args, attempt);
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                var acknowledged = await _decorated.PublishAsync(
+                        publishJob.Args.Exchange, publishJob.Args.RoutingKey, publishJob.Args.Body,
+                        publishJob.Args.Properties, publishJob.Args.CorrelationId, publishJob.CancellationToken)
+                    .ConfigureAwait(false);
+
+                var shouldRetry = !acknowledged && ShouldRetryOnNack(attempt);
+
+                TrackSafe(_diagnostics.TrackPublishAttemptCompleted,
+                    publishJob.Args, attempt, stopwatch.Elapsed, acknowledged, shouldRetry);
+
+                return shouldRetry
+                    ? (false, false)
+                    : (true, acknowledged);
+            }
+            catch (OperationCanceledException)
+            {
+                TrackSafe(_diagnostics.TrackPublishAttemptCancelled, publishJob.Args, attempt, stopwatch.Elapsed);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                var shouldRetry = ShouldRetryOnException(ex, attempt);
+
+                TrackSafe(_diagnostics.TrackPublishAttemptFailed,
+                    publishJob.Args, attempt, stopwatch.Elapsed, ex, shouldRetry);
+
+                if (shouldRetry)
+                {
+                    return (false, default);
+                }
 
                 throw;
             }
         }
 
-        private LinkedListNode<QueueEntry> AddLastSynced(QueueEntry queueEntry)
+        private bool ShouldRetryOnNack(int attempt)
         {
-            lock (_queue)
+            try
             {
-                return _queue.AddLast(queueEntry);
+                return _shouldRetryOnNack(attempt);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"Unable to call '{nameof(_shouldRetryOnNack)}' callback", ex);
+                return false;
             }
         }
 
-        private LinkedListNode<QueueEntry> GetFirstSynced()
+        private bool ShouldRetryOnException(Exception exception, int attempt)
         {
-            lock (_queue)
+            try
             {
-                return _queue.First;
+                return _shouldRetryOnException(exception, attempt);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"Unable to call '{nameof(_shouldRetryOnException)}' callback", ex);
+                return false;
             }
         }
 
-        private void RemoveSynced(LinkedListNode<QueueEntry> node, Action onEmpty)
+        public Task<RetryPublishResult> PublishAsync(string exchange, string routingKey,
+            ReadOnlyMemory<byte> body,
+            MessageProperties properties,
+            string correlationId = null, CancellationToken cancellationToken = default)
         {
-            lock (_queue)
-            {
-                _queue.Remove(node);
-
-                if (_queue.Count == 0)
-                {
-                    onEmpty();
-                }
-            }
+            return PublishAsyncCore(
+                new PublishArgs(exchange, routingKey, body, properties, correlationId), cancellationToken,
+                GetType(), _diagnostics, _publishLoop, CreateStatus, _disposeCancellationToken
+            );
         }
 
         public void Dispose()
         {
-            _decorated.Dispose();
-            _isDisposed = true;
+            DisposeCore(GetType(), OnDispose, _diagnostics, CreateStatus, _disposeCancellationSource);
 
-            _canPublish.Dispose();
-            _canPublish.Set();
-        }
-
-        private void ThrowIfDisposed()
-        {
-            if (_isDisposed)
+            async Task OnDispose()
             {
-                throw new ObjectDisposedException(nameof(AsyncPublisherWithRetries));
+                _decorated.Dispose();
+                await _publishLoop.StopAsync().ConfigureAwait(false);
             }
         }
 
-        private class QueueEntry
+        private AsyncPublisherWithRetriesStatus CreateStatus()
         {
-            public TaskCompletionSource<bool> CompletionSource { get; } = new TaskCompletionSource<bool>();
+            return new AsyncPublisherWithRetriesStatus(_publishLoop.QueueSize, _publishingQueue.Size);
+        }
+
+        private readonly struct Publishing
+        {
+            public readonly TaskCompletionSource<bool> TaskCompletionSource;
+
+            public Publishing(TaskCompletionSource<bool> taskCompletionSource)
+            {
+                TaskCompletionSource = taskCompletionSource;
+            }
         }
     }
 
-    public readonly struct RetryingPublisherResult
+    public readonly struct AsyncPublisherWithRetriesStatus
     {
-        public static readonly RetryingPublisherResult NoRetries = new RetryingPublisherResult(0);
+        public readonly int JobQueueSize;
+        public readonly int PublishingQueueSize;
 
-        public int Retries { get; }
-
-        public RetryingPublisherResult(int retries)
+        public AsyncPublisherWithRetriesStatus(int jobQueueSize, int publishingQueueSize)
         {
+            JobQueueSize = jobQueueSize;
+            PublishingQueueSize = publishingQueueSize;
+        }
+
+        public override string ToString()
+        {
+            return $"{nameof(JobQueueSize)}: {JobQueueSize}; " +
+                   $"{nameof(PublishingQueueSize)}: {PublishingQueueSize}";
+        }
+    }
+
+    public readonly struct RetryPublishResult
+    {
+        public readonly bool IsAcknowledged;
+        public readonly int Retries;
+
+        public RetryPublishResult(bool isAcknowledged, int retries)
+        {
+            IsAcknowledged = isAcknowledged;
             Retries = retries;
+        }
+
+        public override string ToString()
+        {
+            return $"{nameof(IsAcknowledged)}: {IsAcknowledged}; " +
+                   $"{nameof(Retries)}: {Retries}";
         }
     }
 }

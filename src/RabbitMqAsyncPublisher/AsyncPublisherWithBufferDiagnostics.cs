@@ -3,7 +3,7 @@
 namespace RabbitMqAsyncPublisher
 {
     public interface IAsyncPublisherWithBufferDiagnostics :
-        IQueueBasedPublisherDiagnostics<AsyncPublisherWithBufferStatus>, IUnexpectedExceptionDiagnostics
+        IQueueBasedPublisherDiagnostics<AsyncPublisherWithBufferStatus>
     {
         void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
 
@@ -17,10 +17,6 @@ namespace RabbitMqAsyncPublisher
 
         void TrackPublishJobFailed(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
             TimeSpan duration, Exception ex);
-
-        void TrackDisposeStarted(AsyncPublisherWithBufferStatus status);
-
-        void TrackDisposeSucceeded(AsyncPublisherWithBufferStatus status, TimeSpan duration);
     }
 
     public class AsyncPublisherWithBufferDiagnostics : IAsyncPublisherWithBufferDiagnostics
@@ -75,8 +71,7 @@ namespace RabbitMqAsyncPublisher
         }
 
         public virtual void TrackPublishJobFailed(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,
-            TimeSpan duration,
-            Exception ex)
+            TimeSpan duration, Exception ex)
         {
         }
 
@@ -84,7 +79,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackDisposeSucceeded(AsyncPublisherWithBufferStatus status, TimeSpan duration)
+        public virtual void TrackDisposeCompleted(AsyncPublisherWithBufferStatus status, TimeSpan duration)
         {
         }
     }
