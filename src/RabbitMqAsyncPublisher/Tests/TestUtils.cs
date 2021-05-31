@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -94,6 +95,40 @@ namespace Tests
                 cancellationToken.IsCancellationRequested.ShouldBe(false, $"{nameof(SpinWaitFor)} cancelled by a timeout");
                 await winner;
             }
+        }
+        
+        public static Task<T> TestPublish<T>(IAsyncPublisher<T> publisher,
+            ReadOnlyMemory<byte> body = default, CancellationToken cancellationToken = default)
+        {
+            return publisher.PublishAsync(string.Empty, string.Empty, body, MessageProperties.Default, default,
+                cancellationToken);
+        }
+
+        public static Task DequeueAndSetResultAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, T result)
+        {
+            return Task.Run(() =>
+            {
+                queue.TryDequeue(out var item);
+                item.SetResult(result);
+            });
+        }
+
+        public static Task DequeueAndSetExceptionAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, Exception ex)
+        {
+            return Task.Run(() =>
+            {
+                queue.TryDequeue(out var item);
+                item.SetException(ex);
+            });
+        }
+
+        public static Task DequeueAndSetCanceledAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue)
+        {
+            return Task.Run(() =>
+            {
+                queue.TryDequeue(out var item);
+                item.SetCanceled();
+            });
         }
     }
 }

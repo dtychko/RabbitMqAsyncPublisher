@@ -86,6 +86,7 @@
     <ItemGroup>
         <Compile Include="AsyncPublisherTests.cs" />
         <Compile Include="AsyncPublisherWithBufferTests.cs" />
+        <Compile Include="AsyncPublisherWithRetriesTests.cs" />
         <Compile Include="AutoRecoveryTests.cs" />
         <Compile Include="TestAutoRecoveryResource.cs" />
         <Compile Include="TestMessageProperties.cs" />

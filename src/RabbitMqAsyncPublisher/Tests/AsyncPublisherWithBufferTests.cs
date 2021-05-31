@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
-using RabbitMQ.Client;
 using RabbitMqAsyncPublisher;
 using Shouldly;
 using static Tests.TestUtils;

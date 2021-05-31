@@ -413,39 +413,5 @@ namespace Tests
                 await Task.WhenAll(tasks);
             }
         }
-
-        private static Task<T> TestPublish<T>(IAsyncPublisher<T> publisher,
-            ReadOnlyMemory<byte> body = default, CancellationToken cancellationToken = default)
-        {
-            return publisher.PublishAsync(string.Empty, string.Empty, body, MessageProperties.Default, default,
-                cancellationToken);
-        }
-
-        private static Task DequeueAndSetResultAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, T result)
-        {
-            return Task.Run(() =>
-            {
-                queue.TryDequeue(out var item);
-                item.SetResult(result);
-            });
-        }
-
-        private static Task DequeueAndSetExceptionAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue, Exception ex)
-        {
-            return Task.Run(() =>
-            {
-                queue.TryDequeue(out var item);
-                item.SetException(ex);
-            });
-        }
-
-        private static Task DequeueAndSetCanceledAsync<T>(ConcurrentQueue<TaskCompletionSource<T>> queue)
-        {
-            return Task.Run(() =>
-            {
-                queue.TryDequeue(out var item);
-                item.SetCanceled();
-            });
-        }
     }
 }

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using RabbitMQ.Client.Exceptions;
@@ -8,17 +9,20 @@ namespace RabbitMqAsyncPublisher
 {
     using static AsyncPublisherUtils;
 
-    public interface IAsyncPublisherWithRetriesDiagnostics2
-        : IQueueBasedPublisherDiagnostics<AsyncPublisherWithRetriesStatus>, IUnexpectedExceptionDiagnostics
+    public interface IQueueBasedAsyncPublisherWithRetriesDiagnostics
+        : IQueueBasedPublisherDiagnostics<AsyncPublisherWithRetriesStatus>
     {
+        void TrackDisposeStarted(AsyncPublisherWithRetriesStatus status);
+
+        void TrackDisposeSucceeded(AsyncPublisherWithRetriesStatus status, TimeSpan duration);
     }
 
-    public class AsyncPublisherWithRetriesDiagnostics2 : IAsyncPublisherWithRetriesDiagnostics2
+    public class QueueBasedAsyncPublisherWithRetriesDiagnostics : IQueueBasedAsyncPublisherWithRetriesDiagnostics
     {
-        public static readonly IAsyncPublisherWithRetriesDiagnostics2 NoDiagnostics =
-            new AsyncPublisherWithRetriesDiagnostics2();
+        public static readonly IQueueBasedAsyncPublisherWithRetriesDiagnostics NoDiagnostics =
+            new QueueBasedAsyncPublisherWithRetriesDiagnostics();
 
-        protected AsyncPublisherWithRetriesDiagnostics2()
+        protected QueueBasedAsyncPublisherWithRetriesDiagnostics()
         {
         }
 
@@ -45,35 +49,46 @@ namespace RabbitMqAsyncPublisher
         public virtual void TrackUnexpectedException(string message, Exception ex)
         {
         }
+
+        public virtual void TrackDisposeStarted(AsyncPublisherWithRetriesStatus status)
+        {
+        }
+
+        public virtual void TrackDisposeSucceeded(AsyncPublisherWithRetriesStatus status, TimeSpan duration)
+        {
+        }
     }
 
-    public class QueueBasedAsyncPublisherWithRetries : IAsyncPublisher<bool>
+    public class QueueBasedAsyncPublisherWithRetries : IAsyncPublisher<RetryingPublisherResult>
     {
         private readonly IAsyncPublisher<bool> _decorated;
         private readonly TimeSpan _retryDelay;
-        private readonly IAsyncPublisherWithRetriesDiagnostics2 _diagnostics;
+        private readonly IQueueBasedAsyncPublisherWithRetriesDiagnostics _diagnostics;
 
-        private readonly JobQueueLoop<PublishJob<bool>> _publishLoop;
+        private readonly JobQueueLoop<PublishJob<RetryingPublisherResult>> _publishLoop;
 
         private readonly AsyncManualResetEvent _gateEvent = new AsyncManualResetEvent(true);
+
+        private readonly OrderQueue _publishingQueue = new OrderQueue();
 
         private readonly CancellationTokenSource _disposeCancellationSource = new CancellationTokenSource();
         private readonly CancellationToken _disposeCancellationToken;
 
         public QueueBasedAsyncPublisherWithRetries(IAsyncPublisher<bool> decorated, TimeSpan retryDelay,
-            IAsyncPublisherWithRetriesDiagnostics2 diagnostics = null)
+            IQueueBasedAsyncPublisherWithRetriesDiagnostics diagnostics = null)
         {
             _decorated = decorated ?? throw new ArgumentNullException(nameof(decorated));
             _retryDelay = retryDelay;
-            _diagnostics = diagnostics ?? AsyncPublisherWithRetriesDiagnostics2.NoDiagnostics;
+            _diagnostics = diagnostics ?? QueueBasedAsyncPublisherWithRetriesDiagnostics.NoDiagnostics;
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
             _publishLoop =
-                new JobQueueLoop<PublishJob<bool>>(HandlePublishJobAsync, AsyncPublisherDiagnostics.NoDiagnostics);
+                new JobQueueLoop<PublishJob<RetryingPublisherResult>>(HandlePublishJobAsync,
+                    AsyncPublisherDiagnostics.NoDiagnostics);
         }
 
-        private async Task HandlePublishJobAsync(Func<PublishJob<bool>> dequeueJob)
+        private async Task HandlePublishJobAsync(Func<PublishJob<RetryingPublisherResult>> dequeueJob)
         {
             try
             {
@@ -88,93 +103,48 @@ namespace RabbitMqAsyncPublisher
                 return;
             }
 
-            HandlePublishJob(dequeueJob);
+            HandlePublishJobWithRetriesAsync(dequeueJob());
         }
 
-        private void HandlePublishJob(Func<PublishJob<bool>> dequeueJob)
+        private async void HandlePublishJobWithRetriesAsync(PublishJob<RetryingPublisherResult> publishJob)
         {
-            var publishJob = dequeueJob();
-            // TrackSafe(_diagnostics.TrackPublishJobStarting, publishJob.Args, CreateStatus());
-
-            if (_disposeCancellationToken.IsCancellationRequested)
-            {
-                var ex = (Exception) new ObjectDisposedException(GetType().Name);
-                // TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(), TimeSpan.Zero, ex);
-                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
-                return;
-            }
-
-            if (publishJob.CancellationToken.IsCancellationRequested)
-            {
-                // TrackSafe(_diagnostics.TrackPublishJobCancelled, publishJob.Args, CreateStatus(), TimeSpan.Zero);
-                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, publishJob.CancellationToken);
-            }
-
-            // TrackSafe(_diagnostics.TrackPublishJobStarted, publishJob.Args, CreateStatus());
-            // var stopwatch = Stopwatch.StartNew();
-
-            StartPublishAttempts(publishJob);
-        }
-
-        private readonly OrderQueue _orderQueue = new OrderQueue();
-
-        private async Task StartPublishAttempts(PublishJob<bool> publishJob)
-        {
-            var queueEntry = new OrderQueueEntry(new TaskCompletionSource<bool>());
-            var tryRemove = _orderQueue.Enqueue(queueEntry);
+            var currentPublishing = new OrderQueueEntry(new TaskCompletionSource<bool>());
+            var tryRemoveCurrentPublishing = _publishingQueue.Enqueue(currentPublishing);
 
             try
             {
                 if (await TryPublishAsync(publishJob).ConfigureAwait(false))
                 {
-                    ScheduleTrySetResult(publishJob.TaskCompletionSource, true);
+                    ScheduleTrySetResult(publishJob.TaskCompletionSource, RetryingPublisherResult.NoRetries);
                     return;
                 }
 
                 _gateEvent.Reset();
 
-                TaskCompletionSource<bool> tcs;
-                while ((tcs = _orderQueue.Peek().TaskCompletionSource) != queueEntry.TaskCompletionSource)
-                {
-                    // TODO: Check if publishJob.CancellationToken can be cancelled
-                    using (var combinedToken =
-                        CancellationTokenSource.CreateLinkedTokenSource(_disposeCancellationToken,
-                            publishJob.CancellationToken))
-                    {
-                        await Task.WhenAny(
-                            tcs.Task,
-                            Task.Delay(-1, combinedToken.Token)
-                        ).ConfigureAwait(false);
-                    }
-
-                    if (_disposeCancellationToken.IsCancellationRequested)
-                    {
-                        throw new ObjectDisposedException(GetType().Name);
-                    }
-
-                    publishJob.CancellationToken.ThrowIfCancellationRequested();
-                }
+                await WaitForPublishCouldBeRetried(publishJob, currentPublishing).ConfigureAwait(false);
 
                 for (var attempt = 2;; attempt++)
                 {
-                    // TODO: Check if publishJob.CancellationToken can be cancelled
-                    using (var combinedToken =
-                        CancellationTokenSource.CreateLinkedTokenSource(_disposeCancellationToken,
-                            publishJob.CancellationToken))
-                    {
-                        await Task.Delay(_retryDelay, combinedToken.Token).ConfigureAwait(false);
-                    }
+                    await WaitForRetryDelay(publishJob).ConfigureAwait(false);
 
                     if (await TryPublishAsync(publishJob).ConfigureAwait(false))
                     {
-                        ScheduleTrySetResult(publishJob.TaskCompletionSource, true);
+                        ScheduleTrySetResult(publishJob.TaskCompletionSource, new RetryingPublisherResult(attempt - 1));
                         return;
                     }
                 }
             }
             catch (OperationCanceledException ex)
             {
-                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
+                if (ex.CancellationToken == _disposeCancellationToken)
+                {
+                    ScheduleTrySetException(publishJob.TaskCompletionSource,
+                        new ObjectDisposedException(GetType().Name));
+                }
+                else
+                {
+                    ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
+                }
             }
             catch (Exception ex)
             {
@@ -182,39 +152,97 @@ namespace RabbitMqAsyncPublisher
             }
             finally
             {
-                tryRemove();
-                ScheduleTrySetResult(queueEntry.TaskCompletionSource, true);
+                tryRemoveCurrentPublishing();
+                ScheduleTrySetResult(currentPublishing.TaskCompletionSource, true);
+
+                if (_publishingQueue.Size == 0)
+                {
+                    _gateEvent.Set();
+                }
             }
         }
 
-        private async Task<bool> TryPublishAsync(PublishJob<bool> publishJob)
+        private async Task WaitForPublishCouldBeRetried(
+            PublishJob<RetryingPublisherResult> publishJob,
+            OrderQueueEntry targetPublishing)
         {
-            if (_disposeCancellationToken.IsCancellationRequested)
+            TaskCompletionSource<bool> tcs;
+
+            while ((tcs = _publishingQueue.Peek().TaskCompletionSource) != targetPublishing.TaskCompletionSource)
             {
-                throw new ObjectDisposedException(GetType().Name);
+                if (publishJob.CancellationToken.CanBeCanceled)
+                {
+                    using (var combinedToken =
+                        CancellationTokenSource.CreateLinkedTokenSource(
+                            _disposeCancellationToken, publishJob.CancellationToken))
+                    {
+                        await Task.WhenAny(
+                            tcs.Task,
+                            Task.Delay(-1, combinedToken.Token)
+                        ).ConfigureAwait(false);
+
+                        _disposeCancellationToken.ThrowIfCancellationRequested();
+                        publishJob.CancellationToken.ThrowIfCancellationRequested();
+
+                        return;
+                    }
+                }
+
+                await Task.WhenAny(
+                    tcs.Task,
+                    Task.Delay(-1, _disposeCancellationToken)
+                ).ConfigureAwait(false);
+
+                _disposeCancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+
+        private async Task WaitForRetryDelay(PublishJob<RetryingPublisherResult> publishJob)
+        {
+            if (publishJob.CancellationToken.CanBeCanceled)
+            {
+                using (var combinedToken =
+                    CancellationTokenSource.CreateLinkedTokenSource(
+                        _disposeCancellationToken, publishJob.CancellationToken))
+                {
+                    // Using "Task.WhenAny" not to throw OperationCancelledException linked to "combinedToken" immediately.
+                    // We should throw this exception linked directly
+                    // to either "_disposeCancellationToken" or "publishJob.CancellationToken" 
+                    await Task.WhenAny(
+                        Task.Delay(_retryDelay, combinedToken.Token)
+                    ).ConfigureAwait(false);
+
+                    _disposeCancellationToken.ThrowIfCancellationRequested();
+                    publishJob.CancellationToken.ThrowIfCancellationRequested();
+
+                    return;
+                }
             }
 
+            await Task.Delay(_retryDelay, _disposeCancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<bool> TryPublishAsync(PublishJob<RetryingPublisherResult> publishJob)
+        {
+            _disposeCancellationToken.ThrowIfCancellationRequested();
             publishJob.CancellationToken.ThrowIfCancellationRequested();
 
             try
             {
-                var publishResult = await _decorated.PublishAsync(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
-                    publishJob.Args.Body, publishJob.Args.Properties, publishJob.Args.CorrelationId,
-                    publishJob.CancellationToken);
+                var acknowledged = await _decorated.PublishAsync(
+                    publishJob.Args.Exchange, publishJob.Args.RoutingKey, publishJob.Args.Body,
+                    publishJob.Args.Properties, publishJob.Args.CorrelationId, publishJob.CancellationToken);
+                // TODO: track diagnostics
 
-                return publishResult;
+                return acknowledged;
             }
-            catch (AlreadyClosedException ex)
+            catch (AlreadyClosedException)
             {
                 return false;
             }
-            catch (Exception ex)
-            {
-                throw;
-            }
         }
 
-        public Task<bool> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
+        public Task<RetryingPublisherResult> PublishAsync(string exchange, string routingKey, ReadOnlyMemory<byte> body,
             MessageProperties properties,
             string correlationId = null, CancellationToken cancellationToken = default)
         {
@@ -237,8 +265,8 @@ namespace RabbitMqAsyncPublisher
                 _disposeCancellationSource.Dispose();
             }
 
-            // TrackSafe(_diagnostics.TrackDisposeStarted, CreateStatus());
-            // var stopwatch = Stopwatch.StartNew();
+            TrackSafe(_diagnostics.TrackDisposeStarted, CreateStatus());
+            var stopwatch = Stopwatch.StartNew();
 
             try
             {
@@ -247,7 +275,7 @@ namespace RabbitMqAsyncPublisher
                 // ReSharper disable once MethodSupportsCancellation
                 _publishLoop.StopAsync().Wait();
 
-                // TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
+                TrackSafe(_diagnostics.TrackDisposeSucceeded, CreateStatus(), stopwatch.Elapsed);
             }
             catch (Exception ex)
             {
@@ -257,7 +285,7 @@ namespace RabbitMqAsyncPublisher
 
         private AsyncPublisherWithRetriesStatus CreateStatus()
         {
-            return new AsyncPublisherWithRetriesStatus(_publishLoop.QueueSize, _orderQueue.Size);
+            return new AsyncPublisherWithRetriesStatus(_publishLoop.QueueSize, _publishingQueue.Size);
         }
 
         private struct OrderQueueEntry
@@ -321,18 +349,18 @@ namespace RabbitMqAsyncPublisher
     public readonly struct AsyncPublisherWithRetriesStatus
     {
         public readonly int JobQueueSize;
-        public readonly int OrderQueueSize;
+        public readonly int PublishingQueueSize;
 
-        public AsyncPublisherWithRetriesStatus(int jobQueueSize, int orderQueueSize)
+        public AsyncPublisherWithRetriesStatus(int jobQueueSize, int publishingQueueSize)
         {
             JobQueueSize = jobQueueSize;
-            OrderQueueSize = orderQueueSize;
+            PublishingQueueSize = publishingQueueSize;
         }
 
         public override string ToString()
         {
             return $"{nameof(JobQueueSize)}: {JobQueueSize}; " +
-                   $"{nameof(OrderQueueSize)}: {OrderQueueSize}";
+                   $"{nameof(PublishingQueueSize)}: {PublishingQueueSize}";
         }
     }
 }
