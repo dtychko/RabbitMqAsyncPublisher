@@ -120,7 +120,9 @@ namespace RabbitMqAsyncPublisher
             catch (Exception ex)
             {
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Unable to handle publish job: {publishJob.Args}; {nameof(stopwatch.ElapsedMilliseconds)}={stopwatch.ElapsedMilliseconds}",
+                    $"Unable to handle publish job: " +
+                    $"{publishJob.Args}; " +
+                    $"{nameof(stopwatch.ElapsedMilliseconds)}={stopwatch.ElapsedMilliseconds}",
                     ex);
                 ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
                 seqNo = default;
@@ -170,7 +172,9 @@ namespace RabbitMqAsyncPublisher
             catch (Exception ex)
             {
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Unable to process ack queue item: deliveryTag={ackJob.DeliveryTag}; multiple={ackJob.Multiple}; ack={ackJob.Ack}.",
+                    $"Unable to process ack queue item: " +
+                    $"{ackJob}; " +
+                    $"{nameof(stopwatch.ElapsedMilliseconds)}={stopwatch.ElapsedMilliseconds}",
                     ex);
                 return;
             }
@@ -256,12 +260,12 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(Exchange)}: {Exchange}; " +
-                   $"{nameof(RoutingKey)}: {RoutingKey}; " +
-                   $"{nameof(Body)}.{nameof(Body.Length)}: {Body.Length}; " +
-                   $"{nameof(Properties)}: {Properties}; " +
-                   $"{nameof(CorrelationId)}: {CorrelationId}; " +
-                   $"{nameof(StartedAt)}: {StartedAt}";
+            return $"{nameof(Exchange)}={Exchange}; " +
+                   $"{nameof(RoutingKey)}={RoutingKey}; " +
+                   $"{nameof(Body)}.{nameof(Body.Length)}={Body.Length}; " +
+                   $"{nameof(Properties)}={Properties}; " +
+                   $"{nameof(CorrelationId)}={CorrelationId}; " +
+                   $"{nameof(StartedAt)}={StartedAt}";
         }
     }
 
@@ -280,9 +284,9 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(DeliveryTag)}: {DeliveryTag}; " +
-                   $"{nameof(Multiple)}: {Multiple}; " +
-                   $"{nameof(Ack)}: {Ack}";
+            return $"{nameof(DeliveryTag)}={DeliveryTag}; " +
+                   $"{nameof(Multiple)}={Multiple}; " +
+                   $"{nameof(Ack)}={Ack}";
         }
     }
 
@@ -301,9 +305,9 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(PublishQueueSize)}: {PublishQueueSize}; " +
-                   $"{nameof(AckQueueSize)}: {AckQueueSize}; " +
-                   $"{nameof(CompletionSourceRegistrySize)}: {CompletionSourceRegistrySize}";
+            return $"{nameof(PublishQueueSize)}={PublishQueueSize}; " +
+                   $"{nameof(AckQueueSize)}={AckQueueSize}; " +
+                   $"{nameof(CompletionSourceRegistrySize)}={CompletionSourceRegistrySize}";
         }
     }
 }

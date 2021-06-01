@@ -82,12 +82,7 @@ namespace RabbitMqAsyncPublisher
         {
         }
 
-        public virtual void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherStatus status)
-        {
-        }
-
-        public virtual void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherStatus status,
-            ulong deliveryTag)
+        public virtual void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherStatus status)
         {
         }
 

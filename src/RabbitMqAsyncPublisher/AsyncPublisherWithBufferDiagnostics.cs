@@ -5,8 +5,6 @@ namespace RabbitMqAsyncPublisher
     public interface IAsyncPublisherWithBufferDiagnostics :
         IQueueBasedPublisherDiagnostics<AsyncPublisherWithBufferStatus>
     {
-        void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
-
         void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status);
 
         void TrackPublishJobCompleted(PublishArgs publishArgs, AsyncPublisherWithBufferStatus status,

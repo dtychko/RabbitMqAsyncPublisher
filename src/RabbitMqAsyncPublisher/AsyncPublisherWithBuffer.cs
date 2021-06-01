@@ -70,27 +70,14 @@ namespace RabbitMqAsyncPublisher
 
         private void HandlePublishJob(PublishJob<TResult> publishJob)
         {
-            TrackSafe(_diagnostics.TrackPublishJobStarting, publishJob.Args, CreateStatus());
-
-            if (_disposeCancellationToken.IsCancellationRequested)
-            {
-                var ex = (Exception) new ObjectDisposedException(GetType().Name);
-                TrackSafe(_diagnostics.TrackPublishJobFailed, publishJob.Args, CreateStatus(), TimeSpan.Zero, ex);
-                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
-                return;
-            }
-
-            if (publishJob.CancellationToken.IsCancellationRequested)
-            {
-                TrackSafe(_diagnostics.TrackPublishJobCancelled, publishJob.Args, CreateStatus(), TimeSpan.Zero);
-                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, publishJob.CancellationToken);
-            }
-
             TrackSafe(_diagnostics.TrackPublishJobStarted, publishJob.Args, CreateStatus());
             var stopwatch = Stopwatch.StartNew();
 
             try
             {
+                _disposeCancellationToken.ThrowIfCancellationRequested();
+                publishJob.CancellationToken.ThrowIfCancellationRequested();
+
                 UpdateState(1, publishJob.Args.Body.Length);
                 var handleJobTask = _decorated.PublishAsync(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
                     publishJob.Args.Body, publishJob.Args.Properties, publishJob.Args.CorrelationId,
@@ -136,7 +123,17 @@ namespace RabbitMqAsyncPublisher
             }
             catch (OperationCanceledException ex)
             {
-                TrackSafe(_diagnostics.TrackPublishJobCancelled, publishJob.Args, CreateStatus(), stopwatch.Elapsed);
+                if (ex.CancellationToken == _disposeCancellationToken)
+                {
+                    var dex = new ObjectDisposedException(GetType().Name);
+                    TrackSafe(_diagnostics.TrackPublishJobFailed,
+                        publishJob.Args, CreateStatus(), stopwatch.Elapsed, dex);
+                    ScheduleTrySetException(publishJob.TaskCompletionSource, dex);
+                    return;
+                }
+
+                TrackSafe(_diagnostics.TrackPublishJobCancelled,
+                    publishJob.Args, CreateStatus(), stopwatch.Elapsed);
                 ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
             }
             catch (Exception ex)
@@ -207,9 +204,9 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(JobQueueSize)}: {JobQueueSize}; " +
-                   $"{nameof(ProcessingMessages)}: {ProcessingMessages}; " +
-                   $"{nameof(ProcessingBytes)}: {ProcessingBytes}";
+            return $"{nameof(JobQueueSize)}={JobQueueSize}; " +
+                   $"{nameof(ProcessingMessages)}={ProcessingMessages}; " +
+                   $"{nameof(ProcessingBytes)}={ProcessingBytes}";
         }
     }
 }

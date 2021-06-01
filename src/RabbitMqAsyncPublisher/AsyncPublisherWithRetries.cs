@@ -117,13 +117,12 @@ namespace RabbitMqAsyncPublisher
                     TrackSafe(_diagnostics.TrackPublishJobFailed,
                         publishJob.Args, CreateStatus(), stopwatch.Elapsed, dex);
                     ScheduleTrySetException(publishJob.TaskCompletionSource, dex);
+                    return;
                 }
-                else
-                {
-                    TrackSafe(_diagnostics.TrackPublishJobCancelled,
-                        publishJob.Args, CreateStatus(), stopwatch.Elapsed);
-                    ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
-                }
+
+                TrackSafe(_diagnostics.TrackPublishJobCancelled,
+                    publishJob.Args, CreateStatus(), stopwatch.Elapsed);
+                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
             }
             catch (Exception ex)
             {
@@ -257,7 +256,8 @@ namespace RabbitMqAsyncPublisher
             catch (Exception ex)
             {
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Unable to call '{nameof(_shouldRetryOnNack)}' callback", ex);
+                    $"Unable to call '{nameof(_shouldRetryOnNack)}' callback: {nameof(attempt)}={attempt}",
+                    ex);
                 return false;
             }
         }
@@ -271,7 +271,8 @@ namespace RabbitMqAsyncPublisher
             catch (Exception ex)
             {
                 TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Unable to call '{nameof(_shouldRetryOnException)}' callback", ex);
+                    $"Unable to call '{nameof(_shouldRetryOnException)}' callback: {nameof(attempt)}={attempt}",
+                    ex);
                 return false;
             }
         }
@@ -327,8 +328,8 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(JobQueueSize)}: {JobQueueSize}; " +
-                   $"{nameof(PublishingQueueSize)}: {PublishingQueueSize}";
+            return $"{nameof(JobQueueSize)}={JobQueueSize}; " +
+                   $"{nameof(PublishingQueueSize)}={PublishingQueueSize}";
         }
     }
 
@@ -345,8 +346,8 @@ namespace RabbitMqAsyncPublisher
 
         public override string ToString()
         {
-            return $"{nameof(IsAcknowledged)}: {IsAcknowledged}; " +
-                   $"{nameof(Retries)}: {Retries}";
+            return $"{nameof(IsAcknowledged)}={IsAcknowledged}; " +
+                   $"{nameof(Retries)}={Retries}";
         }
     }
 }
