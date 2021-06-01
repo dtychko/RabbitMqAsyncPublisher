@@ -3,17 +3,17 @@ using System.Collections.Generic;
 
 namespace RabbitMqAsyncPublisher
 {
-    internal class LinkedListQueue<TJob>
+    internal class LinkedListQueue<T>
     {
-        private readonly LinkedList<TJob> _queue = new LinkedList<TJob>();
+        private readonly LinkedList<T> _queue = new LinkedList<T>();
         private volatile int _size;
         private bool _completed;
 
         public int Size => _size;
 
-        public Func<bool> Enqueue(TJob job)
+        public Func<bool> Enqueue(T job)
         {
-            LinkedListNode<TJob> queueNode;
+            LinkedListNode<T> queueNode;
 
             lock (_queue)
             {
@@ -26,26 +26,26 @@ namespace RabbitMqAsyncPublisher
                 _size = _queue.Count;
             }
 
-            return () => TryRemoveJob(queueNode);
+            return () => TryRemove(queueNode);
         }
 
-        private bool TryRemoveJob(LinkedListNode<TJob> jobNode)
+        private bool TryRemove(LinkedListNode<T> node)
         {
             lock (_queue)
             {
-                if (jobNode.List is null)
+                if (node.List is null)
                 {
                     return false;
                 }
 
-                _queue.Remove(jobNode);
+                _queue.Remove(node);
                 _size = _queue.Count;
             }
 
             return true;
         }
 
-        public bool CanDequeueJob()
+        public bool CanDequeue()
         {
             lock (_queue)
             {
@@ -53,9 +53,9 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public TJob DequeueJob()
+        public T Dequeue()
         {
-            TJob job;
+            T item;
 
             lock (_queue)
             {
@@ -64,15 +64,15 @@ namespace RabbitMqAsyncPublisher
                     throw new InvalidOperationException("Job queue is empty.");
                 }
 
-                job = _queue.First.Value;
+                item = _queue.First.Value;
                 _queue.RemoveFirst();
                 _size = _queue.Count;
             }
 
-            return job;
+            return item;
         }
 
-        public TJob Peek()
+        public T Peek()
         {
             lock (_queue)
             {

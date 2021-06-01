@@ -63,7 +63,7 @@ namespace RabbitMqAsyncPublisher
                 {
                     _jobQueueReadyEvent.Reset();
 
-                    while (_jobQueue.CanDequeueJob())
+                    while (_jobQueue.CanDequeue())
                     {
                         await HandleJobAsync().ConfigureAwait(false);
                     }
@@ -85,7 +85,7 @@ namespace RabbitMqAsyncPublisher
             }
 
             // Handle jobs that could remain in the job queue
-            while (_jobQueue.CanDequeueJob())
+            while (_jobQueue.CanDequeue())
             {
                 await HandleJobAsync().ConfigureAwait(false);
             }
@@ -95,7 +95,7 @@ namespace RabbitMqAsyncPublisher
         {
             try
             {
-                await _handleJob(() => _jobQueue.DequeueJob()).ConfigureAwait(false);
+                await _handleJob(() => _jobQueue.Dequeue()).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
