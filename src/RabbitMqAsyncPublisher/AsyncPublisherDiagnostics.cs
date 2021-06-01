@@ -32,9 +32,7 @@ namespace RabbitMqAsyncPublisher
 
     public interface IAsyncPublisherDiagnostics : IQueueBasedPublisherDiagnostics<AsyncPublisherStatus>
     {
-        void TrackPublishJobStarting(PublishArgs publishArgs, AsyncPublisherStatus status);
-
-        void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherStatus status, ulong deliveryTag);
+        void TrackPublishJobStarted(PublishArgs publishArgs, AsyncPublisherStatus status);
 
         void TrackPublishJobCompleted(PublishArgs publishArgs, AsyncPublisherStatus status, ulong deliveryTag,
             TimeSpan duration);

@@ -24,7 +24,9 @@ namespace RabbitMqAsyncPublisher
         private readonly CancellationTokenSource _disposeCancellationSource = new CancellationTokenSource();
         private readonly CancellationToken _disposeCancellationToken;
 
-        public AsyncPublisher(IModel model, IAsyncPublisherDiagnostics diagnostics = null)
+        public AsyncPublisher(
+            IModel model,
+            IAsyncPublisherDiagnostics diagnostics = null)
         {
             if (model is null)
             {
@@ -51,6 +53,81 @@ namespace RabbitMqAsyncPublisher
             _model.BasicNacks += OnBasicNacks;
         }
 
+        private void HandlePublishJob(Func<PublishJob<bool>> dequeuePublishJob)
+        {
+            var publishJob = dequeuePublishJob();
+
+            TrackSafe(_diagnostics.TrackPublishJobStarted, publishJob.Args, CreateStatus());
+            var stopwatch = Stopwatch.StartNew();
+
+            if (!CanHandlePublishJob(publishJob, stopwatch, out var seqNo))
+            {
+                return;
+            }
+
+            try
+            {
+                _completionSourceRegistry.Register(seqNo, publishJob.TaskCompletionSource);
+                _model.BasicPublish(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
+                    publishJob.Args.Properties.ApplyTo(_model.CreateBasicProperties()),
+                    publishJob.Args.Body);
+                TrackSafe(_diagnostics.TrackPublishJobCompleted,
+                    publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackPublishJobFailed,
+                    publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed, ex);
+                _completionSourceRegistry.TryRemoveSingle(seqNo, out _);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+            }
+        }
+
+        private bool CanHandlePublishJob(PublishJob<bool> publishJob, Stopwatch stopwatch, out ulong seqNo)
+        {
+            try
+            {
+                seqNo = _model.NextPublishSeqNo;
+
+                if (_disposeCancellationToken.IsCancellationRequested)
+                {
+                    var ex = (Exception) new ObjectDisposedException(GetType().Name);
+                    TrackSafe(_diagnostics.TrackPublishJobFailed,
+                        publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed, ex);
+                    ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+                    return false;
+                }
+
+                if (publishJob.CancellationToken.IsCancellationRequested)
+                {
+                    TrackSafe(_diagnostics.TrackPublishJobCancelled,
+                        publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed);
+                    ScheduleTrySetCanceled(publishJob.TaskCompletionSource, publishJob.CancellationToken);
+                    return false;
+                }
+
+                if (IsModelClosed(out var shutdownEventArgs))
+                {
+                    var ex = new AlreadyClosedException(shutdownEventArgs);
+                    TrackSafe(_diagnostics.TrackPublishJobFailed,
+                        publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed, ex);
+                    ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"Unable to handle publish job: {publishJob.Args}; {nameof(stopwatch.ElapsedMilliseconds)}={stopwatch.ElapsedMilliseconds}",
+                    ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+                seqNo = default;
+                return false;
+            }
+        }
+
         private void OnBasicAcks(object sender, BasicAckEventArgs e)
         {
             var ackJob = new AckArgs(e.DeliveryTag, e.Multiple, true);
@@ -63,72 +140,6 @@ namespace RabbitMqAsyncPublisher
             var ackJob = new AckArgs(e.DeliveryTag, e.Multiple, false);
             _ackLoop.Enqueue(ackJob);
             TrackSafe(_diagnostics.TrackAckJobEnqueued, ackJob, CreateStatus());
-        }
-
-        private void HandlePublishJob(Func<PublishJob<bool>> dequeuePublishJob)
-        {
-            var publishJob = dequeuePublishJob();
-            TrackSafe(_diagnostics.TrackPublishJobStarting, publishJob.Args, CreateStatus());
-
-            if (_disposeCancellationToken.IsCancellationRequested)
-            {
-                var ex = (Exception) new ObjectDisposedException(GetType().Name);
-                TrackSafe(_diagnostics.TrackPublishJobFailed,
-                    publishJob.Args, CreateStatus(), (ulong) 0, TimeSpan.Zero, ex);
-                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
-                return;
-            }
-
-            ulong seqNo;
-
-            try
-            {
-                seqNo = _model.NextPublishSeqNo;
-
-                if (IsModelClosed(out var shutdownEventArgs))
-                {
-                    var ex = new AlreadyClosedException(shutdownEventArgs);
-                    TrackSafe(_diagnostics.TrackPublishJobFailed,
-                        publishJob.Args, CreateStatus(), seqNo, TimeSpan.Zero, ex);
-                    ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
-                    return;
-                }
-            }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackUnexpectedException, "Unable to start message publishing.", ex);
-                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
-                return;
-            }
-
-            TrackSafe(_diagnostics.TrackPublishJobStarted, publishJob.Args, CreateStatus(), seqNo);
-            var stopwatch = Stopwatch.StartNew();
-
-            try
-            {
-                if (publishJob.CancellationToken.IsCancellationRequested)
-                {
-                    TrackSafe(_diagnostics.TrackPublishJobCancelled,
-                        publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed);
-                    ScheduleTrySetCanceled(publishJob.TaskCompletionSource, publishJob.CancellationToken);
-                    return;
-                }
-
-                _completionSourceRegistry.Register(seqNo, publishJob.TaskCompletionSource);
-                _model.BasicPublish(publishJob.Args.Exchange, publishJob.Args.RoutingKey,
-                    publishJob.Args.Properties.ApplyTo(_model.CreateBasicProperties()),
-                    publishJob.Args.Body);
-            }
-            catch (Exception ex)
-            {
-                TrackSafe(_diagnostics.TrackPublishJobFailed,
-                    publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed, ex);
-                _completionSourceRegistry.TryRemoveSingle(seqNo, out _);
-                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
-                return;
-            }
-
-            TrackSafe(_diagnostics.TrackPublishJobCompleted, publishJob.Args, CreateStatus(), seqNo, stopwatch.Elapsed);
         }
 
         private void HandleAckJob(Func<AckArgs> dequeueAckJob)
