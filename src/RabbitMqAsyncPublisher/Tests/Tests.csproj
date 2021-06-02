@@ -89,6 +89,7 @@
         <Compile Include="AsyncPublisherWithBufferTests.cs" />
         <Compile Include="AsyncPublisherWithRetriesTests.cs" />
         <Compile Include="AutoRecoveryTests.cs" />
+        <Compile Include="BalancedQueueTests.cs" />
         <Compile Include="TestAutoRecoveryResource.cs" />
         <Compile Include="TestMessageProperties.cs" />
         <Compile Include="TestNonRecoverableConnection.cs" />
