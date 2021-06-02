@@ -50,11 +50,12 @@ namespace RabbitMqAsyncPublisher
             await _gateEvent.WaitAsync(cancellationToken);
         }
 
-        public bool TryDequeue(Func<TValue, string, Task> handle)
+        public bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler)
         {
             if (!_partitionQueue.TryDequeue(out var partition))
             {
                 AdjustGate();
+                handler = default;
                 return false;
             }
 
@@ -82,11 +83,11 @@ namespace RabbitMqAsyncPublisher
                 AdjustGate();
             }
 
-            HandleSafe(handle, value, partition);
+            handler = handle => HandleSafe(handle, value, partition);
             return true;
         }
 
-        private async void HandleSafe(Func<TValue, string, Task> handle, TValue value, Partition partition)
+        private async Task HandleSafe(Func<TValue, string, Task> handle, TValue value, Partition partition)
         {
             try
             {

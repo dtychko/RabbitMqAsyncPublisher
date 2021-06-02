@@ -70,20 +70,21 @@ namespace Tests
                         {
                             await queue.WaitToDequeueAsync(cts.Token).ConfigureAwait(false);
 
-                            while (queue.TryDequeue(async (value, partitionKey) =>
+                            while (queue.TryDequeue(out var handler))
                             {
-                                await Task.Run(() =>
+                                await handler((value, partitionKey) =>
                                 {
-                                    values.Enqueue(partitionKey);
-                                    Interlocked.Increment(ref counter);
-
-                                    if (counter == writerCount * valuesPerWriter)
+                                    return Task.Run(() =>
                                     {
-                                        cts.Cancel();
-                                    }
+                                        values.Enqueue(partitionKey);
+                                        Interlocked.Increment(ref counter);
+
+                                        if (counter == writerCount * valuesPerWriter)
+                                        {
+                                            cts.Cancel();
+                                        }
+                                    });
                                 }).ConfigureAwait(false);
-                            }))
-                            {
                             }
                         }
                     }
