@@ -31,6 +31,163 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
+    public class SyncBalancedQueue<TValue> : IBalancedQueue<TValue>
+    {
+        private readonly int _partitionProcessingLimit;
+
+        private readonly ConcurrentDictionary<string, Partition> _partitionRegistry =
+            new ConcurrentDictionary<string, Partition>();
+
+        private readonly ConcurrentQueue<Partition> _partitionQueue = new ConcurrentQueue<Partition>();
+
+        private readonly LinkedListQueue<TaskCompletionSource<(TValue, Partition)>> _waiterQueue =
+            new LinkedListQueue<TaskCompletionSource<(TValue, Partition)>>();
+
+        public SyncBalancedQueue(int partitionProcessingLimit)
+        {
+            _partitionProcessingLimit = partitionProcessingLimit;
+        }
+
+        public void Enqueue(string partitionKey, TValue value)
+        {
+            lock (_partitionRegistry)
+            {
+                var partition = _partitionRegistry.GetOrAdd(partitionKey, _ => new Partition(partitionKey));
+
+                if (partition.Queue.Count == 0 && partition.ProcessingCount < _partitionProcessingLimit)
+                {
+                    if (_waiterQueue.TryDequeue(out var waiter))
+                    {
+                        partition.ProcessingCount += 1;
+                        Task.Run(() => waiter.SetResult((value, partition)));
+                        return;
+                    }
+
+                    _partitionQueue.Enqueue(partition);
+                }
+
+                partition.Queue.Enqueue(value);
+            }
+        }
+
+        public Task WaitToDequeueAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler)
+        {
+            lock (_partitionRegistry)
+            {
+                if (!_partitionQueue.TryDequeue(out var partition))
+                {
+                    handler = default;
+                    return false;
+                }
+
+                var value = partition.Queue.Dequeue();
+                partition.ProcessingCount += 1;
+
+                if (partition.Queue.Count > 0 && partition.ProcessingCount < _partitionProcessingLimit)
+                {
+                    _partitionQueue.Enqueue(partition);
+                }
+
+                handler = CreateValueHandler(value, partition);
+                return true;
+            }
+        }
+
+        public async Task<Func<Func<TValue, string, Task>, Task>> DequeueAsync(
+            CancellationToken cancellationToken = default)
+        {
+            TaskCompletionSource<(TValue, Partition)> waiter;
+            Func<bool> tryRemoveWaiter;
+
+            lock (_partitionRegistry)
+            {
+                if (TryDequeue(out var handler))
+                {
+                    return handler;
+                }
+
+                waiter = new TaskCompletionSource<(TValue, Partition)>();
+                tryRemoveWaiter = _waiterQueue.Enqueue(waiter);
+            }
+
+            var (value, partition) = await WaitForCompletedOrCancelled(waiter.Task, tryRemoveWaiter, cancellationToken)
+                .ConfigureAwait(false);
+            return CreateValueHandler(value, partition);
+        }
+
+        private static async Task<TResult> WaitForCompletedOrCancelled<TResult>(Task<TResult> waiterTask,
+            Func<bool> tryRemoveWaiterTask, CancellationToken cancellationToken)
+        {
+            if (cancellationToken.CanBeCanceled)
+            {
+                var completedTask = await Task.WhenAny(
+                    waiterTask,
+                    Task.Delay(-1, cancellationToken)
+                ).ConfigureAwait(false);
+
+                if (completedTask != waiterTask && tryRemoveWaiterTask())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+            }
+
+            return await waiterTask.ConfigureAwait(false);
+        }
+
+        private Func<Func<TValue, string, Task>, Task> CreateValueHandler(TValue value, Partition partition)
+        {
+            return handle => HandleSafe(handle, value, partition);
+        }
+
+        private async Task HandleSafe(Func<TValue, string, Task> handle, TValue value, Partition partition)
+        {
+            try
+            {
+                await handle(value, partition.Name).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Ignore
+            }
+
+            lock (_partitionRegistry)
+            {
+                partition.ProcessingCount -= 1;
+
+                if (partition.Queue.Count > 0 && partition.ProcessingCount == _partitionProcessingLimit - 1)
+                {
+                    if (_waiterQueue.TryDequeue(out var waiter))
+                    {
+                        partition.ProcessingCount += 1;
+                        var dequeuedValue = partition.Queue.Dequeue();
+                        Task.Run(() => waiter.SetResult((dequeuedValue, partition)));
+                        return;
+                    }
+
+                    _partitionQueue.Enqueue(partition);
+                }
+            }
+        }
+
+        private class Partition
+        {
+            public readonly string Name;
+            public readonly Queue<TValue> Queue;
+            public int ProcessingCount;
+
+            public Partition(string name)
+            {
+                Name = name;
+                Queue = new Queue<TValue>();
+            }
+        }
+    }
+
     public class BalancedQueue<TValue> : IBalancedQueue<TValue>
     {
         private readonly int _partitionProcessingLimit;
@@ -162,7 +319,6 @@ namespace RabbitMqAsyncPublisher
             if (!_partitionQueue.TryDequeue(out var partition))
             {
                 // TODO: spin and try again if any partition is "in progress" now 
-
                 handler = default;
                 return false;
             }
