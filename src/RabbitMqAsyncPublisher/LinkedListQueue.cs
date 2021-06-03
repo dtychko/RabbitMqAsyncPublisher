@@ -72,6 +72,23 @@ namespace RabbitMqAsyncPublisher
             return item;
         }
 
+        public bool TryDequeue(out T value)
+        {
+            lock (_queue)
+            {
+                if (_queue.Count == 0)
+                {
+                    value = default;
+                    return false;
+                }
+
+                value = _queue.First.Value;
+                _queue.RemoveFirst();
+                _size = _queue.Count;
+                return true;
+            }
+        }
+
         public T Peek()
         {
             lock (_queue)
