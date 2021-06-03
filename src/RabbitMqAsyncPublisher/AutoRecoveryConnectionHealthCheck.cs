@@ -21,7 +21,7 @@ namespace RabbitMqAsyncPublisher
             _cancellationTokenSource = new CancellationTokenSource();
             _cancellationToken = _cancellationTokenSource.Token;
 
-            Task.Run(ScheduleHealthCheckLoopIterationSafe, _cancellationToken);
+            Task.Run((Action) ScheduleHealthCheckLoopIterationSafe, _cancellationToken);
         }
 
         private async void ScheduleHealthCheckLoopIterationSafe()
@@ -53,7 +53,7 @@ namespace RabbitMqAsyncPublisher
 
             // Probably the connection is still alive, schedule the next health check loop iteration.
 #pragma warning disable 4014
-            Task.Run(ScheduleHealthCheckLoopIterationSafe, _cancellationToken);
+            Task.Run((Action) ScheduleHealthCheckLoopIterationSafe, _cancellationToken);
 #pragma warning restore 4014
         }
 

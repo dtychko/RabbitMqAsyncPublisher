@@ -304,7 +304,7 @@ namespace RabbitMqAsyncPublisher
             return new AsyncPublisherWithRetriesStatus(_publishLoop.QueueSize, _publishingQueue.Size);
         }
 
-        private readonly struct Publishing
+        private struct Publishing
         {
             public readonly TaskCompletionSource<bool> TaskCompletionSource;
 
@@ -315,7 +315,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public readonly struct AsyncPublisherWithRetriesStatus
+    public struct AsyncPublisherWithRetriesStatus
     {
         public readonly int JobQueueSize;
         public readonly int PublishingQueueSize;
@@ -333,7 +333,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public readonly struct RetryPublishResult
+    public struct RetryPublishResult
     {
         public readonly bool IsAcknowledged;
         public readonly int Retries;

@@ -38,7 +38,7 @@ namespace RabbitMqAsyncPublisher
 
             _stopCancellationToken = _stopCancellation.Token;
 
-            _jobQueueTask = Task.Run(StartLoop);
+            _jobQueueTask = Task.Run((Action) StartLoop);
         }
 
         public Func<bool> Enqueue(TJob job)

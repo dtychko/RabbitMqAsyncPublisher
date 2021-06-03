@@ -46,8 +46,8 @@ namespace RabbitMqAsyncPublisher
 
             _disposeCancellationToken = _disposeCancellationSource.Token;
 
-            _publishLoop = new JobQueueLoop<PublishJob<bool>>(HandlePublishJob, _diagnostics);
-            _ackLoop = new JobQueueLoop<AckArgs>(HandleAckJob, _diagnostics);
+            _publishLoop = new JobQueueLoop<PublishJob<bool>>((Action<Func<PublishJob<bool>>>) HandlePublishJob, _diagnostics);
+            _ackLoop = new JobQueueLoop<AckArgs>((Action<Func<AckArgs>>) HandleAckJob, _diagnostics);
 
             _model.BasicAcks += OnBasicAcks;
             _model.BasicNacks += OnBasicNacks;
@@ -223,7 +223,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    internal readonly struct PublishJob<TResult>
+    internal struct PublishJob<TResult>
     {
         public readonly PublishArgs Args;
         public readonly CancellationToken CancellationToken;
@@ -238,7 +238,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public readonly struct PublishArgs
+    public struct PublishArgs
     {
         public string Exchange { get; }
         public string RoutingKey { get; }
@@ -269,7 +269,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public readonly struct AckArgs
+    public struct AckArgs
     {
         public ulong DeliveryTag { get; }
         public bool Multiple { get; }
@@ -290,7 +290,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public readonly struct AsyncPublisherStatus
+    public struct AsyncPublisherStatus
     {
         public readonly int PublishQueueSize;
         public readonly int AckQueueSize;

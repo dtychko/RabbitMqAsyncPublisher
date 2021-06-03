@@ -298,7 +298,7 @@ namespace RabbitMqAsyncPublisher
         private void OnResourceShutdown(object sender, ShutdownEventArgs args)
         {
             TrackSafe(_diagnostics.TrackResourceClosed, _currentSessionId, args);
-            Task.Run(CreateResource, _cancellationToken);
+            Task.Run((Action) CreateResource, _cancellationToken);
         }
 
         private void CleanUpThreadUnsafe()

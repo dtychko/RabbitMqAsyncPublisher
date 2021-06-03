@@ -64,7 +64,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        private readonly struct SourceEntry
+        private struct SourceEntry
         {
             public TaskCompletionSource<bool> Source { get; }
 

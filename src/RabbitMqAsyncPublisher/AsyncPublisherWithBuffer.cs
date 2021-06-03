@@ -189,7 +189,7 @@ namespace RabbitMqAsyncPublisher
         }
     }
 
-    public readonly struct AsyncPublisherWithBufferStatus
+    public struct AsyncPublisherWithBufferStatus
     {
         public readonly int JobQueueSize;
         public readonly int ProcessingMessages;
