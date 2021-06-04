@@ -43,6 +43,15 @@ namespace RabbitMqAsyncPublisher
         private readonly LinkedListQueue<TaskCompletionSource<(TValue, Partition)>> _waiterQueue =
             new LinkedListQueue<TaskCompletionSource<(TValue, Partition)>>();
 
+        private readonly object _syncRoot = new object();
+
+        private volatile int _valueCount;
+        private volatile int _partitionCount;
+
+        public int ValueCount => _valueCount;
+
+        public int PartitionCount => _partitionCount;
+
         public SyncBalancedQueue(int partitionProcessingLimit)
         {
             _partitionProcessingLimit = partitionProcessingLimit;
@@ -50,23 +59,22 @@ namespace RabbitMqAsyncPublisher
 
         public void Enqueue(string partitionKey, TValue value)
         {
-            lock (_partitionRegistry)
+            lock (_syncRoot)
             {
                 var partition = _partitionRegistry.GetOrAdd(partitionKey, _ => new Partition(partitionKey));
 
-                if (partition.Queue.Count == 0 && partition.ProcessingCount < _partitionProcessingLimit)
+                if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
                 {
-                    if (_waiterQueue.TryDequeue(out var waiter))
-                    {
-                        partition.ProcessingCount += 1;
-                        Task.Run(() => waiter.SetResult((value, partition)));
-                        return;
-                    }
-
-                    _partitionQueue.Enqueue(partition);
+                    Interlocked.Increment(ref _partitionCount);
                 }
 
                 partition.Queue.Enqueue(value);
+                Interlocked.Increment(ref _valueCount);
+
+                if (partition.Queue.Count == 1 && partition.ProcessingCount < _partitionProcessingLimit)
+                {
+                    PromoteToBeEnqueued(partition);
+                }
             }
         }
 
@@ -77,7 +85,7 @@ namespace RabbitMqAsyncPublisher
 
         public bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler)
         {
-            lock (_partitionRegistry)
+            lock (_syncRoot)
             {
                 if (!_partitionQueue.TryDequeue(out var partition))
                 {
@@ -87,6 +95,7 @@ namespace RabbitMqAsyncPublisher
 
                 var value = partition.Queue.Dequeue();
                 partition.ProcessingCount += 1;
+                Interlocked.Decrement(ref _valueCount);
 
                 if (partition.Queue.Count > 0 && partition.ProcessingCount < _partitionProcessingLimit)
                 {
@@ -104,7 +113,7 @@ namespace RabbitMqAsyncPublisher
             TaskCompletionSource<(TValue, Partition)> waiter;
             Func<bool> tryRemoveWaiter;
 
-            lock (_partitionRegistry)
+            lock (_syncRoot)
             {
                 if (TryDequeue(out var handler))
                 {
@@ -155,23 +164,36 @@ namespace RabbitMqAsyncPublisher
                 // Ignore
             }
 
-            lock (_partitionRegistry)
+            lock (_syncRoot)
             {
                 partition.ProcessingCount -= 1;
 
+                if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
+                {
+                    _partitionRegistry.TryRemove(partition.Name, out _);
+                    Interlocked.Decrement(ref _partitionCount);
+                    return;
+                }
+
                 if (partition.Queue.Count > 0 && partition.ProcessingCount == _partitionProcessingLimit - 1)
                 {
-                    if (_waiterQueue.TryDequeue(out var waiter))
-                    {
-                        partition.ProcessingCount += 1;
-                        var dequeuedValue = partition.Queue.Dequeue();
-                        Task.Run(() => waiter.SetResult((dequeuedValue, partition)));
-                        return;
-                    }
-
-                    _partitionQueue.Enqueue(partition);
+                    PromoteToBeEnqueued(partition);
                 }
             }
+        }
+
+        private void PromoteToBeEnqueued(Partition partition)
+        {
+            if (_waiterQueue.TryDequeue(out var waiter))
+            {
+                var value = partition.Queue.Dequeue();
+                partition.ProcessingCount += 1;
+                Interlocked.Decrement(ref _valueCount);
+                Task.Run(() => waiter.SetResult((value, partition)));
+                return;
+            }
+
+            _partitionQueue.Enqueue(partition);
         }
 
         private class Partition

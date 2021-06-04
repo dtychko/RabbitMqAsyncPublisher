@@ -359,6 +359,7 @@ namespace Tests
         }
 
         [Test]
+        [Repeat(2)]
         public async Task TillTheEnd()
         {
             ThreadPool.SetMaxThreads(100, 100);
@@ -373,41 +374,36 @@ namespace Tests
             }
 
             var mre = new ManualResetEventSlim(false);
-            var readersReadyEvent = new CountdownEvent(10);
 
+            var readerCount = Math.Min(Environment.ProcessorCount * 2, 10);
+            var readersReadyEvent = new CountdownEvent(readerCount);
+            var readers = new List<Task<(int processed, int remaining)>>();
 
-            var readers = new List<Task>();
-            var counter = 0;
-
-            for (var i = 0; i < 10; i++)
+            for (var i = 0; i < readerCount; i++)
             {
                 readers.Add(Task.Run(async () =>
                 {
-                    var localCounter = 0;
-                    
+                    var processed = 0;
+
                     readersReadyEvent.Signal();
                     mre.Wait();
 
                     while (queue.TryDequeue(out var handler))
                     {
-                        await handler(async (v, p) =>
-                        {
-                            await Task.Yield();
-                            Interlocked.Increment(ref counter);
-                            localCounter += 1;
-                        });
+                        await handler(async (v, p) => { await Task.Yield(); });
+                        processed += 1;
                     }
 
-                    Console.WriteLine($"{localCounter}; {counter}");
+                    return (processed, remaining: queue.ValueCount);
                 }));
             }
 
             readersReadyEvent.Wait();
             mre.Set();
 
-            await Task.WhenAll(readers);
+            var counters = await Task.WhenAll(readers);
 
-            Console.WriteLine(counter);
+            counters.All(c => c.processed > 0 && c.remaining == 0).ShouldBeTrue();
         }
     }
 }
