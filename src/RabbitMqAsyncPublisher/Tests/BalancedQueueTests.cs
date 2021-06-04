@@ -259,7 +259,7 @@ namespace Tests
             var random = new Random(123);
             var mre = new ManualResetEventSlim(false);
 
-            var queue = new SyncBalancedQueue<int>(partitionProcessingLimit);
+            var queue = new BalancedQueueSync<int>(partitionProcessingLimit);
 
             var writersReadyEvent = new CountdownEvent(writerCount);
             var readersReadyEvent = new CountdownEvent(readerCount);
@@ -366,7 +366,7 @@ namespace Tests
             ThreadPool.SetMinThreads(100, 100);
 
             // var queue = new BalancedQueue<int>(int.MaxValue);
-            var queue = new SyncBalancedQueue<int>(int.MaxValue);
+            var queue = new BalancedQueueSync<int>(int.MaxValue);
 
             for (var i = 0; i < 1_000_000; i++)
             {
