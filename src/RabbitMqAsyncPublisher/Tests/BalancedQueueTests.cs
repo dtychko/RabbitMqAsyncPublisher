@@ -394,7 +394,7 @@ namespace Tests
                         processed += 1;
                     }
 
-                    return (processed, remaining: queue.ValueCount);
+                    return (processed, remaining: queue.Count);
                 }));
             }
 

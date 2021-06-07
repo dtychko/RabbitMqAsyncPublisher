@@ -1,32 +1,59 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using static RabbitMqAsyncPublisher.AsyncPublisherUtils;
 
 namespace RabbitMqAsyncPublisher
 {
     public interface IBalancedProcessor<in TValue>
     {
-        Task ProcessAsync(string partitionKey, TValue value);
+        Task ProcessAsync(TValue value, string partitionKey, string correlationId = null);
     }
 
-    public class BalancedProcessor<TValue> : IBalancedProcessor<TValue>
+    public class BalancedProcessor<TValue> : IBalancedProcessor<TValue>, IDisposable
     {
-        private readonly IBalancedQueue<Job> _queue;
+        private readonly IBalancedQueue<PublishJob> _queue;
         private readonly Func<TValue, string, CancellationToken, Task> _onProcess;
         private readonly int _degreeOfParallelism;
-        private Task[] _workerTasks;
+        private readonly IBalancedProcessorDiagnostics<TValue> _diagnostics;
 
         private readonly CancellationTokenSource _disposeCancellationSource;
         private readonly CancellationToken _disposeCancellationToken;
 
-        public BalancedProcessor(Func<TValue, string, CancellationToken, Task> onProcess,
+        private readonly object _startDisposeSyncRoot = new object();
+
+        private Task[] _workerTasks;
+
+        private volatile int _processingCount;
+        private volatile int _processedTotalCount;
+
+        public int QueuedCount => _queue.Count;
+        public int ProcessingCount => _processingCount;
+        public int ProcessedTotalCount => _processedTotalCount;
+
+        public BalancedProcessor(
+            Func<TValue, string, CancellationToken, Task> onProcess,
             int partitionProcessingLimit = 1,
-            int degreeOfParallelism = 1)
+            int degreeOfParallelism = 1,
+            IBalancedProcessorDiagnostics<TValue> diagnostics = null)
         {
-            _queue = new BalancedQueueSync<Job>(partitionProcessingLimit);
-            _onProcess = onProcess;
+            if (partitionProcessingLimit < 1)
+            {
+                throw new ArgumentException("Positive number is expected.", nameof(partitionProcessingLimit));
+            }
+
+            if (degreeOfParallelism < 1)
+            {
+                throw new ArgumentException("Positive number is expected.", nameof(degreeOfParallelism));
+            }
+
+            _onProcess = onProcess ?? throw new ArgumentNullException(nameof(onProcess));
             _degreeOfParallelism = degreeOfParallelism;
+            _diagnostics = diagnostics ?? BalancedProcessorDiagnostics<TValue>.NoDiagnostics;
+
+            _queue = new BalancedQueueSync<PublishJob>(partitionProcessingLimit);
 
             _disposeCancellationSource = new CancellationTokenSource();
             _disposeCancellationToken = _disposeCancellationSource.Token;
@@ -34,7 +61,7 @@ namespace RabbitMqAsyncPublisher
 
         public void Start()
         {
-            lock (_disposeCancellationSource)
+            lock (_startDisposeSyncRoot)
             {
                 if (_disposeCancellationToken.IsCancellationRequested)
                 {
@@ -56,72 +83,110 @@ namespace RabbitMqAsyncPublisher
         {
             while (true)
             {
-                Func<Func<Job, string, Task>, Task> handler;
+                Func<Func<PublishJob, string, Task>, Task> handler;
 
                 try
                 {
-                    handler = await _queue.DequeueAsync(_disposeCancellationToken)
-                        .ConfigureAwait(false);
+                    // ReSharper disable once MethodSupportsCancellation
+                    handler = await _queue.DequeueAsync().ConfigureAwait(false);
                 }
-                catch (OperationCanceledException ex)
+                catch (OperationCanceledException) when (_disposeCancellationToken.IsCancellationRequested)
                 {
-                    if (_disposeCancellationToken.IsCancellationRequested)
-                    {
-                        return;
-                    }
-
-                    // TODO: Log unexpected error
-                    continue;
+                    // "OperationCanceledException" could be thrown when "_queue" is completed and empty.
+                    // It means that no more work could be enqueued, as result current worker loop should exit.
+                    return;
                 }
                 catch (Exception ex)
                 {
-                    // TODO: Log unexpected error
+                    TrackSafe(_diagnostics.TrackUnexpectedException,
+                        $"[CRITICAL] Unexpected exception in '{GetType().Name}' job processing loop", ex);
+
+                    // Wait for a moment before going to the next iteration.
+                    // Otherwise all worker loops could move to the state when they are spinning CPU continuously
+                    // if for some reason unexpected error is thrown permanently.
+                    await Task.WhenAny(
+                        Task.Delay(TimeSpan.FromSeconds(1), _disposeCancellationToken)
+                    ).ConfigureAwait(false);
                     continue;
                 }
 
-                await handler(async (job, partitionKey) =>
+                try
                 {
-                    try
-                    {
-                        _disposeCancellationToken.ThrowIfCancellationRequested();
-                        await _onProcess(job.Value, partitionKey, _disposeCancellationToken).ConfigureAwait(false);
-                        AsyncPublisherUtils.ScheduleTrySetResult(job.TaskCompletionSource, true);
-                    }
-                    catch (OperationCanceledException ex)
-                    {
-                        if (_disposeCancellationToken.IsCancellationRequested)
-                        {
-                            AsyncPublisherUtils.ScheduleTrySetException(job.TaskCompletionSource,
-                                new ObjectDisposedException(GetType().Name));
-                            return;
-                        }
-
-                        AsyncPublisherUtils.ScheduleTrySetCanceled(job.TaskCompletionSource, ex.CancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        AsyncPublisherUtils.ScheduleTrySetException(job.TaskCompletionSource, ex);
-                    }
-                }).ConfigureAwait(false);
+                    await handler(HandleJobAsync).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    TrackSafe(_diagnostics.TrackUnexpectedException,
+                        $"[CRITICAL] Unexpected exception in '{GetType().Name}' during handling a job", ex);
+                }
             }
         }
 
-        public Task ProcessAsync(string partitionKey, TValue value)
+        private async Task HandleJobAsync(PublishJob publishJob, string _)
+        {
+            Interlocked.Increment(ref _processingCount);
+
+            TrackSafe(_diagnostics.TrackProcessJobStarted, publishJob.Args, CreateStatus());
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                _disposeCancellationToken.ThrowIfCancellationRequested();
+
+                await _onProcess(publishJob.Args.Value, publishJob.Args.PartitionKey, _disposeCancellationToken)
+                    .ConfigureAwait(false);
+
+                TrackSafe(_diagnostics.TrackProcessJobCompleted, publishJob.Args, UpdateState(), stopwatch.Elapsed);
+                ScheduleTrySetResult(publishJob.TaskCompletionSource, true);
+            }
+            catch (OperationCanceledException ex)
+            {
+                if (_disposeCancellationToken.IsCancellationRequested)
+                {
+                    var dex = new ObjectDisposedException(GetType().Name);
+                    TrackSafe(_diagnostics.TrackProcessJobFailed, publishJob.Args, UpdateState(), stopwatch.Elapsed,
+                        dex);
+                    ScheduleTrySetException(publishJob.TaskCompletionSource, dex);
+                    return;
+                }
+
+                TrackSafe(_diagnostics.TrackProcessJobCancelled, publishJob.Args, UpdateState(), stopwatch.Elapsed);
+                ScheduleTrySetCanceled(publishJob.TaskCompletionSource, ex.CancellationToken);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackProcessJobFailed, publishJob.Args, UpdateState(), stopwatch.Elapsed, ex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+            }
+
+            BalancedProcessorStatus UpdateState()
+            {
+                Interlocked.Decrement(ref _processingCount);
+                Interlocked.Increment(ref _processedTotalCount);
+
+                return CreateStatus();
+            }
+        }
+
+        public Task ProcessAsync(TValue value, string partitionKey, string correlationId = null)
         {
             if (_disposeCancellationToken.IsCancellationRequested)
             {
                 throw new ObjectDisposedException(GetType().Name);
             }
 
-            var job = new Job(value);
-            _queue.Enqueue(partitionKey, job);
+            var processArgs = new ProcessArgs<TValue>(value, partitionKey, correlationId);
+            var publishJob = new PublishJob(processArgs);
+            _queue.Enqueue(partitionKey, publishJob);
 
-            return job.TaskCompletionSource.Task;
+            TrackSafe(_diagnostics.TrackProcessJobEnqueued, publishJob.Args, CreateStatus());
+
+            return publishJob.TaskCompletionSource.Task;
         }
 
         public void Dispose()
         {
-            lock (_disposeCancellationSource)
+            lock (_startDisposeSyncRoot)
             {
                 if (_disposeCancellationSource.IsCancellationRequested)
                 {
@@ -132,24 +197,87 @@ namespace RabbitMqAsyncPublisher
                 _disposeCancellationSource.Dispose();
             }
 
-            _queue.TryComplete(new OperationCanceledException(_disposeCancellationToken));
+            TrackSafe(_diagnostics.TrackDisposeStarted, CreateStatus());
+            var stopwatch = Stopwatch.StartNew();
 
-            if (!(_workerTasks is null))
+            try
             {
-                Task.WaitAll(_workerTasks);
+                _queue.TryComplete(new OperationCanceledException(_disposeCancellationToken));
+
+                if (!(_workerTasks is null))
+                {
+                    Task.WaitAll(_workerTasks);
+                }
+
+                TrackSafe(_diagnostics.TrackDisposeCompleted, CreateStatus(), stopwatch.Elapsed);
+            }
+            catch (Exception ex)
+            {
+                TrackSafe(_diagnostics.TrackUnexpectedException,
+                    $"[CRITICAL] Unable to dispose processor '{GetType().Name}'", ex);
             }
         }
 
-        private struct Job
+        private BalancedProcessorStatus CreateStatus()
         {
-            public readonly TValue Value;
+            return new BalancedProcessorStatus(_queue.Count, _processingCount, _processedTotalCount);
+        }
+
+        private struct PublishJob
+        {
+            public readonly ProcessArgs<TValue> Args;
             public readonly TaskCompletionSource<bool> TaskCompletionSource;
 
-            public Job(TValue value)
+            public PublishJob(ProcessArgs<TValue> args)
             {
-                Value = value;
+                Args = args;
                 TaskCompletionSource = new TaskCompletionSource<bool>();
             }
+        }
+    }
+
+    public struct ProcessArgs<TValue>
+    {
+        public readonly TValue Value;
+        public readonly string PartitionKey;
+        public readonly string CorrelationId;
+        public readonly DateTimeOffset StartedAt;
+
+        public ProcessArgs(TValue value, string partitionKey, string correlationId)
+        {
+            Value = value;
+            PartitionKey = partitionKey;
+            CorrelationId = correlationId ?? Guid.NewGuid().ToString("D");
+            StartedAt = DateTimeOffset.UtcNow;
+        }
+
+        public override string ToString()
+        {
+            return $"{nameof(Value)}=({Value}); " +
+                   $"{nameof(PartitionKey)}={PartitionKey}; " +
+                   $"{nameof(CorrelationId)}={CorrelationId}; " +
+                   $"{nameof(StartedAt)}={StartedAt}";
+        }
+    }
+
+    public struct BalancedProcessorStatus
+    {
+        public readonly int QueuedCount;
+        public readonly int ProcessingCount;
+        public readonly int ProcessedTotalCount;
+
+        public BalancedProcessorStatus(int queuedCount, int processingCount, int processedTotalCount)
+        {
+            QueuedCount = queuedCount;
+            ProcessingCount = processingCount;
+            ProcessedTotalCount = processedTotalCount;
+        }
+
+        public override string ToString()
+        {
+            return $"{nameof(QueuedCount)}={QueuedCount}; " +
+                   $"{nameof(ProcessingCount)}={ProcessingCount}; " +
+                   $"{nameof(ProcessedTotalCount)}={ProcessedTotalCount}";
         }
     }
 }

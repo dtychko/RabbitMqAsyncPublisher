@@ -9,6 +9,8 @@ namespace RabbitMqAsyncPublisher
 {
     public interface IBalancedQueue<TValue>
     {
+        int Count { get; }
+
         void Enqueue(string partitionKey, TValue value);
 
         bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler);
@@ -52,7 +54,7 @@ namespace RabbitMqAsyncPublisher
         private volatile int _partitionCount;
         private volatile int _partitionQueueCount;
 
-        public int ValueCount => _valueCount;
+        public int Count => _valueCount;
 
         public int PartitionCount => _partitionCount;
 
