@@ -53,7 +53,7 @@ namespace RabbitMqAsyncPublisher
             _degreeOfParallelism = degreeOfParallelism;
             _diagnostics = diagnostics ?? BalancedProcessorDiagnostics<TValue>.NoDiagnostics;
 
-            _queue = new BalancedQueueSync<PublishJob>(partitionProcessingLimit);
+            _queue = new BalancedQueue<PublishJob>(partitionProcessingLimit);
 
             _disposeCancellationSource = new CancellationTokenSource();
             _disposeCancellationToken = _disposeCancellationSource.Token;

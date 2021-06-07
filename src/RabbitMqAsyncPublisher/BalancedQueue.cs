@@ -7,6 +7,19 @@ using static RabbitMqAsyncPublisher.AsyncPublisherUtils;
 
 namespace RabbitMqAsyncPublisher
 {
+    public interface IBalancedQueue<TValue>
+    {
+        int Count { get; }
+
+        void Enqueue(string partitionKey, TValue value);
+
+        bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler);
+
+        Task<Func<Func<TValue, string, Task>, Task>> DequeueAsync(CancellationToken cancellationToken = default);
+
+        bool TryComplete(Exception ex);
+    }
+
     public class BalancedQueue<TValue> : IBalancedQueue<TValue>
     {
         private readonly int _partitionProcessingLimit;
@@ -20,89 +33,95 @@ namespace RabbitMqAsyncPublisher
         private readonly LinkedListQueue<TaskCompletionSource<(TValue, Partition)>> _waiterQueue =
             new LinkedListQueue<TaskCompletionSource<(TValue, Partition)>>();
 
-        private readonly object _gateEventSyncRoot = new object();
-        private readonly object _enqueuePartitionSyncRoot = new object();
+        private readonly object _syncRoot = new object();
 
-        private volatile int _partitionRegistryCount;
+        private Exception _completionException;
+
+        private volatile int _valueCount;
+        private volatile int _partitionCount;
         private volatile int _partitionQueueCount;
 
-        private AsyncManualResetEvent _gateEvent;
+        public int Count => _valueCount;
 
-        public int PartitionCount => _partitionRegistryCount;
+        public int PartitionCount => _partitionCount;
+
+        public int ReadyPartitionCount => _partitionQueueCount;
 
         public BalancedQueue(int partitionProcessingLimit, IUnexpectedExceptionDiagnostics diagnostics = null)
         {
             _partitionProcessingLimit = partitionProcessingLimit;
-            _diagnostics = diagnostics ?? UnexpectedExceptionDiagnostics.NoDiagnostics;
+            _diagnostics = diagnostics;
         }
 
         public void Enqueue(string partitionKey, TValue value)
         {
-            while (true)
+            lock (_syncRoot)
             {
+                if (!(_completionException is null))
+                {
+                    throw new Exception("BalancedQueue is already completed");
+                }
+
                 var partition = _partitionRegistry.GetOrAdd(partitionKey, _ => new Partition(partitionKey));
-                bool shouldEnqueuePartition;
 
-                lock (partition)
+                if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
                 {
-                    if (partition.IsRemoved)
-                    {
-                        continue;
-                    }
-
-                    if (partition.IsNew)
-                    {
-                        partition.IsNew = false;
-                        Interlocked.Increment(ref _partitionRegistryCount);
-                    }
-
-                    partition.Queue.Enqueue(value);
-                    shouldEnqueuePartition =
-                        partition.Queue.Count == 1 && partition.ProcessingCount < _partitionProcessingLimit;
+                    Interlocked.Increment(ref _partitionCount);
                 }
 
-                if (shouldEnqueuePartition)
-                {
-                    EnqueuePartition(partition);
-                }
+                partition.Queue.Enqueue(value);
+                Interlocked.Increment(ref _valueCount);
 
-                return;
+                if (partition.Queue.Count == 1 && partition.ProcessingCount < _partitionProcessingLimit)
+                {
+                    PromoteToBeEnqueued(partition);
+                }
             }
         }
 
-        public async Task WaitToDequeueAsync(CancellationToken cancellationToken = default)
+        public bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler)
         {
-            if (_gateEvent is null)
+            lock (_syncRoot)
             {
-                lock (_gateEventSyncRoot)
+                if (!_partitionQueue.TryDequeue(out var partition))
                 {
-                    if (_gateEvent is null)
-                    {
-                        _gateEvent = new AsyncManualResetEvent(false);
-                        AdjustGate();
-                    }
+                    handler = default;
+                    return false;
                 }
-            }
 
-            await _gateEvent.WaitAsync(cancellationToken).ConfigureAwait(false);
+                Interlocked.Decrement(ref _partitionQueueCount);
+
+                var value = partition.Queue.Dequeue();
+                partition.ProcessingCount += 1;
+                Interlocked.Decrement(ref _valueCount);
+
+                if (partition.Queue.Count > 0 && partition.ProcessingCount < _partitionProcessingLimit)
+                {
+                    _partitionQueue.Enqueue(partition);
+                    Interlocked.Increment(ref _partitionQueueCount);
+                }
+
+                handler = CreateValueHandler(value, partition);
+                return true;
+            }
         }
 
         public async Task<Func<Func<TValue, string, Task>, Task>> DequeueAsync(
             CancellationToken cancellationToken = default)
         {
-            if (TryDequeue(out var handler))
-            {
-                return handler;
-            }
-
             TaskCompletionSource<(TValue, Partition)> waiter;
             Func<bool> tryRemoveWaiter;
 
-            lock (_enqueuePartitionSyncRoot)
+            lock (_syncRoot)
             {
-                if (TryDequeue(out handler))
+                if (TryDequeue(out var handler))
                 {
                     return handler;
+                }
+
+                if (!(_completionException is null) && _valueCount == 0)
+                {
+                    throw new Exception("BalancedQueue is already completed");
                 }
 
                 waiter = new TaskCompletionSource<(TValue, Partition)>();
@@ -116,7 +135,30 @@ namespace RabbitMqAsyncPublisher
 
         public bool TryComplete(Exception ex)
         {
-            throw new NotImplementedException();
+            if (ex is null)
+            {
+                throw new ArgumentNullException(nameof(ex));
+            }
+
+            lock (_syncRoot)
+            {
+                if (!(_completionException is null))
+                {
+                    return false;
+                }
+
+                _completionException = ex;
+
+                if (_valueCount == 0)
+                {
+                    while (_waiterQueue.TryDequeue(out var waiter))
+                    {
+                        Task.Run(() => waiter.SetException(ex));
+                    }
+                }
+
+                return true;
+            }
         }
 
         private static async Task<TResult> WaitForCompletedOrCancelled<TResult>(Task<TResult> waiterTask,
@@ -138,38 +180,6 @@ namespace RabbitMqAsyncPublisher
             return await waiterTask.ConfigureAwait(false);
         }
 
-        public bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler)
-        {
-            if (!_partitionQueue.TryDequeue(out var partition))
-            {
-                // TODO: spin and try again if any partition is "in progress" now 
-                handler = default;
-                return false;
-            }
-
-            Interlocked.Decrement(ref _partitionQueueCount);
-            AdjustGate();
-
-            TValue value;
-            bool shouldEnqueuePartition;
-
-            lock (partition)
-            {
-                value = partition.Queue.Dequeue();
-                partition.ProcessingCount += 1;
-                shouldEnqueuePartition =
-                    partition.Queue.Count > 0 && partition.ProcessingCount < _partitionProcessingLimit;
-            }
-
-            if (shouldEnqueuePartition)
-            {
-                EnqueuePartition(partition);
-            }
-
-            handler = CreateValueHandler(value, partition);
-            return true;
-        }
-
         private Func<Func<TValue, string, Task>, Task> CreateValueHandler(TValue value, Partition partition)
         {
             return handle => HandleSafe(handle, value, partition);
@@ -183,89 +193,54 @@ namespace RabbitMqAsyncPublisher
             }
             catch (Exception ex)
             {
-                TrackSafe(_diagnostics.TrackUnexpectedException,
-                    $"Unable to handle a value in partition '{partition.Name}'", ex);
+                if (!(_diagnostics is null))
+                {
+                    TrackSafe(_diagnostics.TrackUnexpectedException,
+                        $"Unable to handle a value in partition '{partition.Name}'", ex);
+                }
             }
 
-            bool shouldEnqueuePartition;
-
-            lock (partition)
+            lock (_syncRoot)
             {
                 partition.ProcessingCount -= 1;
 
                 if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
                 {
-                    partition.IsRemoved = true;
                     _partitionRegistry.TryRemove(partition.Name, out _);
-                    Interlocked.Decrement(ref _partitionRegistryCount);
-
+                    Interlocked.Decrement(ref _partitionCount);
                     return;
                 }
 
-                shouldEnqueuePartition = partition.Queue.Count > 0 &&
-                                         partition.ProcessingCount == _partitionProcessingLimit - 1;
-            }
-
-            if (shouldEnqueuePartition)
-            {
-                EnqueuePartition(partition);
-            }
-        }
-
-        private void EnqueuePartition(Partition partition)
-        {
-            lock (_enqueuePartitionSyncRoot)
-            {
-                if (_waiterQueue.TryDequeue(out var waiter))
+                if (!(_completionException is null) && _valueCount == 0)
                 {
-                    TValue value;
-                    bool shouldEnqueuePartition;
-
-                    lock (partition)
+                    while (_waiterQueue.TryDequeue(out var waiter))
                     {
-                        value = partition.Queue.Dequeue();
-                        partition.ProcessingCount += 1;
-                        shouldEnqueuePartition =
-                            partition.Queue.Count > 0 && partition.ProcessingCount < _partitionProcessingLimit;
+                        ScheduleTrySetException(waiter, _completionException);
                     }
 
-                    Task.Run(() =>
-                    {
-                        if (shouldEnqueuePartition)
-                        {
-                            EnqueuePartition(partition);
-                        }
-
-                        waiter.SetResult((value, partition));
-                    });
-
                     return;
                 }
 
-                _partitionQueue.Enqueue(partition);
-                Interlocked.Increment(ref _partitionQueueCount);
-                AdjustGate();
+                if (partition.Queue.Count > 0 && partition.ProcessingCount == _partitionProcessingLimit - 1)
+                {
+                    PromoteToBeEnqueued(partition);
+                }
             }
         }
 
-        private void AdjustGate()
+        private void PromoteToBeEnqueued(Partition partition)
         {
-            if (_gateEvent is null)
+            if (_waiterQueue.TryDequeue(out var waiter))
             {
+                var value = partition.Queue.Dequeue();
+                partition.ProcessingCount += 1;
+                Interlocked.Decrement(ref _valueCount);
+                Task.Run(() => waiter.SetResult((value, partition)));
                 return;
             }
 
-            lock (_gateEventSyncRoot)
-            {
-                if (_partitionQueueCount > 0)
-                {
-                    _gateEvent.Set();
-                }
-                else
-                {
-                    _gateEvent.Reset();
-                }
-            }
+            _partitionQueue.Enqueue(partition);
+            Interlocked.Increment(ref _partitionQueueCount);
         }
 
         private class Partition
@@ -273,14 +248,11 @@ namespace RabbitMqAsyncPublisher
             public readonly string Name;
             public readonly Queue<TValue> Queue;
             public int ProcessingCount;
-            public bool IsNew;
-            public bool IsRemoved;
 
             public Partition(string name)
             {
                 Name = name;
                 Queue = new Queue<TValue>();
-                IsNew = true;
             }
         }
     }
