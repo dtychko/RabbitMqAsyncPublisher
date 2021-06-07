@@ -46,9 +46,21 @@ namespace RabbitMqAsyncPublisher
                     handler = await _queue.DequeueAsync(_disposeCancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch
+                catch (OperationCanceledException ex)
                 {
-                    return;
+                    // if (_disposeCancellationToken.IsCancellationRequested)
+                    if (ex.CancellationToken == _disposeCancellationToken)
+                    {
+                        return;
+                    }
+
+                    // TODO: Log unexpected error
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    // TODO: Log unexpected error
+                    continue;
                 }
 
                 await handler(async (job, partitionKey) =>
@@ -95,8 +107,18 @@ namespace RabbitMqAsyncPublisher
 
         public void Dispose()
         {
-            _disposeCancellationSource.Cancel();
-            _disposeCancellationSource.Dispose();
+            lock (_disposeCancellationSource)
+            {
+                if (_disposeCancellationSource.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                _disposeCancellationSource.Cancel();
+                _disposeCancellationSource.Dispose();
+            }
+
+            _queue.TryComplete(new OperationCanceledException(_disposeCancellationToken));
 
             Task.WaitAll(_workerTasks);
         }
@@ -157,6 +179,8 @@ namespace RabbitMqAsyncPublisher
 
         private AsyncManualResetEvent _gateEvent;
 
+        private Exception _completionException;
+
         private volatile int _valueCount;
         private volatile int _partitionCount;
         private volatile int _partitionQueueCount;
@@ -177,6 +201,11 @@ namespace RabbitMqAsyncPublisher
         {
             lock (_syncRoot)
             {
+                if (!(_completionException is null))
+                {
+                    throw new Exception("BalancedQueue is already completed");
+                }
+
                 var partition = _partitionRegistry.GetOrAdd(partitionKey, _ => new Partition(partitionKey));
 
                 if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
@@ -253,6 +282,11 @@ namespace RabbitMqAsyncPublisher
                     return handler;
                 }
 
+                if (!(_completionException is null) && _valueCount == 0)
+                {
+                    throw new Exception("BalancedQueue is already completed");
+                }
+
                 waiter = new TaskCompletionSource<(TValue, Partition)>();
                 tryRemoveWaiter = _waiterQueue.Enqueue(waiter);
             }
@@ -260,6 +294,34 @@ namespace RabbitMqAsyncPublisher
             var (value, partition) = await WaitForCompletedOrCancelled(waiter.Task, tryRemoveWaiter, cancellationToken)
                 .ConfigureAwait(false);
             return CreateValueHandler(value, partition);
+        }
+
+        public bool TryComplete(Exception ex)
+        {
+            if (ex is null)
+            {
+                throw new ArgumentNullException(nameof(ex));
+            }
+
+            lock (_syncRoot)
+            {
+                if (!(_completionException is null))
+                {
+                    return false;
+                }
+
+                _completionException = ex;
+
+                if (_valueCount == 0)
+                {
+                    while (_waiterQueue.TryDequeue(out var waiter))
+                    {
+                        Task.Run(() => waiter.SetException(ex));
+                    }
+                }
+
+                return true;
+            }
         }
 
         private static async Task<TResult> WaitForCompletedOrCancelled<TResult>(Task<TResult> waiterTask,
@@ -306,6 +368,16 @@ namespace RabbitMqAsyncPublisher
                 {
                     _partitionRegistry.TryRemove(partition.Name, out _);
                     Interlocked.Decrement(ref _partitionCount);
+                    return;
+                }
+
+                if (!(_completionException is null) && _valueCount == 0)
+                {
+                    while (_waiterQueue.TryDequeue(out var waiter))
+                    {
+                        Task.Run(() => waiter.SetException(_completionException));
+                    }
+
                     return;
                 }
 
