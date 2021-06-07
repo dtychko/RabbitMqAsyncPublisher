@@ -78,6 +78,7 @@
         <Compile Include="AsyncPublisherUtils.cs" />
         <Compile Include="AsyncPublisherWithBufferDiagnostics.cs" />
         <Compile Include="AsyncPublisherWithRetriesDiagnostics.cs" />
+        <Compile Include="BalancedProcessor.cs" />
         <Compile Include="BalancedQueue.cs" />
         <Compile Include="BalancedQueueSync.cs" />
         <Compile Include="BrokerOrderingTest.cs" />

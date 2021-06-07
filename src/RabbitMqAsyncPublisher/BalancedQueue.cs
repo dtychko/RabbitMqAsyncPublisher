@@ -114,6 +114,11 @@ namespace RabbitMqAsyncPublisher
             return CreateValueHandler(value, partition);
         }
 
+        public bool TryComplete(Exception ex)
+        {
+            throw new NotImplementedException();
+        }
+
         private static async Task<TResult> WaitForCompletedOrCancelled<TResult>(Task<TResult> waiterTask,
             Func<bool> tryRemoveWaiterTask, CancellationToken cancellationToken)
         {
