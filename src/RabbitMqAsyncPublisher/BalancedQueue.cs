@@ -9,8 +9,6 @@ namespace RabbitMqAsyncPublisher
 {
     public interface IBalancedQueue<TValue>
     {
-        int Count { get; }
-
         void Enqueue(string partitionKey, TValue value);
 
         bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler);
@@ -41,11 +39,8 @@ namespace RabbitMqAsyncPublisher
         private volatile int _partitionCount;
         private volatile int _partitionQueueCount;
 
-        public int Count => _valueCount;
-
-        public int PartitionCount => _partitionCount;
-
-        public int ReadyPartitionCount => _partitionQueueCount;
+        public BalancedQueueStatus Status =>
+            new BalancedQueueStatus(_valueCount, _partitionCount, _partitionQueueCount);
 
         public BalancedQueue(int partitionProcessingLimit, IUnexpectedExceptionDiagnostics diagnostics = null)
         {
@@ -55,27 +50,22 @@ namespace RabbitMqAsyncPublisher
 
         public void Enqueue(string partitionKey, TValue value)
         {
+            if (partitionKey is null)
+            {
+                throw new ArgumentNullException(nameof(partitionKey));
+            }
+
             lock (_syncRoot)
             {
-                if (!(_completionException is null))
+                if (IsEnqueueCompleted)
                 {
-                    throw new Exception("BalancedQueue is already completed");
+                    throw new BalancedQueueCompletedException();
                 }
 
-                var partition = _partitionRegistry.GetOrAdd(partitionKey, _ => new Partition(partitionKey));
-
-                if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
-                {
-                    Interlocked.Increment(ref _partitionCount);
-                }
-
-                partition.Queue.Enqueue(value);
-                Interlocked.Increment(ref _valueCount);
-
-                if (partition.Queue.Count == 1 && partition.ProcessingCount < _partitionProcessingLimit)
-                {
-                    PromoteToBeEnqueued(partition);
-                }
+                EnqueueValue(
+                    GetPartition(partitionKey),
+                    value
+                );
             }
         }
 
@@ -83,22 +73,19 @@ namespace RabbitMqAsyncPublisher
         {
             lock (_syncRoot)
             {
-                if (!_partitionQueue.TryDequeue(out var partition))
+                if (!TryDequeuePartition(out var partition))
                 {
                     handler = default;
                     return false;
                 }
 
-                Interlocked.Decrement(ref _partitionQueueCount);
-
-                var value = partition.Queue.Dequeue();
-                partition.ProcessingCount += 1;
-                Interlocked.Decrement(ref _valueCount);
+                var value = DequeueValue(partition);
 
                 if (partition.Queue.Count > 0 && partition.ProcessingCount < _partitionProcessingLimit)
                 {
-                    _partitionQueue.Enqueue(partition);
-                    Interlocked.Increment(ref _partitionQueueCount);
+                    // Partition could be enqueued back to the partition queue
+                    // if it still contains some values and its processing limit wasn't reached yet
+                    EnqueuePartition(partition);
                 }
 
                 handler = CreateValueHandler(value, partition);
@@ -114,14 +101,14 @@ namespace RabbitMqAsyncPublisher
 
             lock (_syncRoot)
             {
+                if (IsDequeueCompleted)
+                {
+                    throw new BalancedQueueCompletedException();
+                }
+
                 if (TryDequeue(out var handler))
                 {
                     return handler;
-                }
-
-                if (!(_completionException is null) && _valueCount == 0)
-                {
-                    throw new Exception("BalancedQueue is already completed");
                 }
 
                 waiter = new TaskCompletionSource<(TValue, Partition)>();
@@ -149,12 +136,10 @@ namespace RabbitMqAsyncPublisher
 
                 _completionException = ex;
 
-                if (_valueCount == 0)
+                if (IsDequeueCompleted)
                 {
-                    while (_waiterQueue.TryDequeue(out var waiter))
-                    {
-                        Task.Run(() => waiter.SetException(ex));
-                    }
+                    // There is no more values to dequeue, all active waiters should be rejected immediately
+                    ScheduleRejectAllWaiters();
                 }
 
                 return true;
@@ -202,40 +187,36 @@ namespace RabbitMqAsyncPublisher
 
             lock (_syncRoot)
             {
-                partition.ProcessingCount -= 1;
-
-                if (partition.Queue.Count == 0 && partition.ProcessingCount == 0)
-                {
-                    _partitionRegistry.TryRemove(partition.Name, out _);
-                    Interlocked.Decrement(ref _partitionCount);
-                    return;
-                }
-
-                if (!(_completionException is null) && _valueCount == 0)
-                {
-                    while (_waiterQueue.TryDequeue(out var waiter))
-                    {
-                        ScheduleTrySetException(waiter, _completionException);
-                    }
-
-                    return;
-                }
+                CompleteValueProcessing(partition);
 
                 if (partition.Queue.Count > 0 && partition.ProcessingCount == _partitionProcessingLimit - 1)
                 {
-                    PromoteToBeEnqueued(partition);
+                    // Partition could be enqueued to the partition queue
+                    // because it has some values for processing and its processing counter is under limit again
+                    EnqueuePartition(partition);
                 }
             }
         }
 
-        private void PromoteToBeEnqueued(Partition partition)
+        private Partition GetPartition(string partitionKey)
+        {
+            var partition = _partitionRegistry.GetOrAdd(partitionKey, _ => new Partition(partitionKey));
+
+            if (partition.IsEmpty)
+            {
+                // New empty partition is created
+                Interlocked.Increment(ref _partitionCount);
+            }
+
+            return partition;
+        }
+
+        private void EnqueuePartition(Partition partition)
         {
             if (_waiterQueue.TryDequeue(out var waiter))
             {
-                var value = partition.Queue.Dequeue();
-                partition.ProcessingCount += 1;
-                Interlocked.Decrement(ref _valueCount);
-                Task.Run(() => waiter.SetResult((value, partition)));
+                var value = DequeueValue(partition);
+                ScheduleTrySetResult(waiter, (value, partition));
                 return;
             }
 
@@ -243,17 +224,126 @@ namespace RabbitMqAsyncPublisher
             Interlocked.Increment(ref _partitionQueueCount);
         }
 
+        private bool TryDequeuePartition(out Partition partition)
+        {
+            if (!_partitionQueue.TryDequeue(out partition))
+            {
+                return false;
+            }
+
+            Interlocked.Decrement(ref _partitionQueueCount);
+            return true;
+        }
+
+        private void EnqueueValue(Partition partition, TValue value)
+        {
+            partition.Queue.Enqueue(value);
+            Interlocked.Increment(ref _valueCount);
+
+            if (partition.Queue.Count == 1 && partition.ProcessingCount < _partitionProcessingLimit)
+            {
+                // The first value was added to the partition.
+                // It could be enqueued to the partition queue if its processing limit wasn't reached yet. 
+                EnqueuePartition(partition);
+            }
+        }
+
+        private TValue DequeueValue(Partition partition)
+        {
+            var value = partition.Queue.Dequeue();
+            partition.ProcessingCount += 1;
+            Interlocked.Decrement(ref _valueCount);
+
+            if (IsDequeueCompleted)
+            {
+                // If queue is already completed and empty then reject all active waiters immediately
+                // because no more values will be enqueued
+                ScheduleRejectAllWaiters();
+            }
+
+            return value;
+        }
+
+        private void ScheduleRejectAllWaiters()
+        {
+            if (_waiterQueue.Size == 0)
+            {
+                return;
+            }
+
+            var waiters = new List<TaskCompletionSource<(TValue, Partition)>>();
+
+            while (_waiterQueue.TryDequeue(out var waiter))
+            {
+                waiters.Add(waiter);
+            }
+
+            Task.Run(() =>
+            {
+                foreach (var waiter in waiters)
+                {
+                    waiter.SetException(_completionException);
+                }
+            });
+        }
+
+        private void CompleteValueProcessing(Partition partition)
+        {
+            partition.ProcessingCount -= 1;
+
+            if (partition.IsEmpty)
+            {
+                _partitionRegistry.TryRemove(partition.Name, out _);
+                Interlocked.Decrement(ref _partitionCount);
+            }
+        }
+
+        private bool IsEnqueueCompleted => !(_completionException is null);
+
+        private bool IsDequeueCompleted => !(_completionException is null) && _valueCount == 0;
+
         private class Partition
         {
             public readonly string Name;
             public readonly Queue<TValue> Queue;
             public int ProcessingCount;
 
+            public bool IsEmpty => Queue.Count == 0 && ProcessingCount == 0;
+
             public Partition(string name)
             {
                 Name = name;
                 Queue = new Queue<TValue>();
             }
+        }
+    }
+
+    public class BalancedQueueCompletedException : Exception
+    {
+        public BalancedQueueCompletedException()
+            : base("BalancedQueue is already completed")
+        {
+        }
+    }
+
+    public struct BalancedQueueStatus
+    {
+        public readonly int ValueCount;
+        public readonly int PartitionCount;
+        public readonly int ReadyPartitionCount;
+
+        public BalancedQueueStatus(int valueCount, int partitionCount, int readyPartitionCount)
+        {
+            ValueCount = valueCount;
+            PartitionCount = partitionCount;
+            ReadyPartitionCount = readyPartitionCount;
+        }
+
+        public override string ToString()
+        {
+            return $"{nameof(ValueCount)}={ValueCount}; " +
+                   $"{nameof(PartitionCount)}={PartitionCount}; " +
+                   $"{nameof(ReadyPartitionCount)}={ReadyPartitionCount}";
         }
     }
 }

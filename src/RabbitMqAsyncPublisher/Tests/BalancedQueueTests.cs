@@ -166,7 +166,7 @@ namespace Tests
                         processed += 1;
                     }
 
-                    return (processed, remaining: queue.Count);
+                    return (processed, remaining: queue.Status.ValueCount);
                 }));
             }
 
