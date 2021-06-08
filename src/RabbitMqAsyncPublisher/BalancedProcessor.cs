@@ -9,8 +9,6 @@ namespace RabbitMqAsyncPublisher
 {
     public interface IBalancedProcessor<in TValue>
     {
-        BalancedProcessorStatus Status { get; }
-
         Task ProcessAsync(TValue value, string partitionKey, string correlationId = null);
     }
 
@@ -129,10 +127,14 @@ namespace RabbitMqAsyncPublisher
             TrackSafe(_diagnostics.TrackProcessJobStarted, publishJob.Args, CreateStatus());
             var stopwatch = Stopwatch.StartNew();
 
+            if (_disposeCancellationToken.IsCancellationRequested)
+            {
+                OnDispose();
+                return;
+            }
+
             try
             {
-                _disposeCancellationToken.ThrowIfCancellationRequested();
-
                 await _onProcess(publishJob.Args.Value, publishJob.Args.PartitionKey, _disposeCancellationToken)
                     .ConfigureAwait(false);
 
@@ -143,10 +145,7 @@ namespace RabbitMqAsyncPublisher
             {
                 if (_disposeCancellationToken.IsCancellationRequested)
                 {
-                    var dex = new ObjectDisposedException(GetType().Name);
-                    TrackSafe(_diagnostics.TrackProcessJobFailed, publishJob.Args, UpdateState(), stopwatch.Elapsed,
-                        dex);
-                    ScheduleTrySetException(publishJob.TaskCompletionSource, dex);
+                    OnDispose();
                     return;
                 }
 
@@ -157,6 +156,14 @@ namespace RabbitMqAsyncPublisher
             {
                 TrackSafe(_diagnostics.TrackProcessJobFailed, publishJob.Args, UpdateState(), stopwatch.Elapsed, ex);
                 ScheduleTrySetException(publishJob.TaskCompletionSource, ex);
+            }
+
+            void OnDispose()
+            {
+                var dex = new ObjectDisposedException(GetType().Name);
+                TrackSafe(_diagnostics.TrackProcessJobFailed, publishJob.Args, UpdateState(), stopwatch.Elapsed,
+                    dex);
+                ScheduleTrySetException(publishJob.TaskCompletionSource, dex);
             }
 
             BalancedProcessorStatus UpdateState()
@@ -177,7 +184,7 @@ namespace RabbitMqAsyncPublisher
 
             var processArgs = new ProcessArgs<TValue>(value, partitionKey, correlationId);
             var publishJob = new PublishJob(processArgs);
-            _queue.Enqueue(partitionKey, publishJob);
+            _queue.Enqueue(publishJob, partitionKey);
 
             TrackSafe(_diagnostics.TrackProcessJobEnqueued, publishJob.Args, CreateStatus());
 

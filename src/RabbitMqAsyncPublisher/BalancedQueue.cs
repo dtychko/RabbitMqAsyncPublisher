@@ -9,11 +9,12 @@ namespace RabbitMqAsyncPublisher
 {
     public interface IBalancedQueue<TValue>
     {
-        void Enqueue(string partitionKey, TValue value);
+        void Enqueue(TValue value, string partitionKey);
 
-        bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler);
+        bool TryDequeue(out Func<Func<TValue, string, Task>, Task<(TValue, string)>> handler);
 
-        Task<Func<Func<TValue, string, Task>, Task>> DequeueAsync(CancellationToken cancellationToken = default);
+        Task<Func<Func<TValue, string, Task>, Task<(TValue, string)>>> DequeueAsync(
+            CancellationToken cancellationToken = default);
 
         bool TryComplete(Exception ex);
     }
@@ -48,7 +49,7 @@ namespace RabbitMqAsyncPublisher
             _diagnostics = diagnostics;
         }
 
-        public void Enqueue(string partitionKey, TValue value)
+        public void Enqueue(TValue value, string partitionKey)
         {
             if (partitionKey is null)
             {
@@ -69,7 +70,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public bool TryDequeue(out Func<Func<TValue, string, Task>, Task> handler)
+        public bool TryDequeue(out Func<Func<TValue, string, Task>, Task<(TValue, string)>> handler)
         {
             lock (_syncRoot)
             {
@@ -93,7 +94,7 @@ namespace RabbitMqAsyncPublisher
             }
         }
 
-        public async Task<Func<Func<TValue, string, Task>, Task>> DequeueAsync(
+        public async Task<Func<Func<TValue, string, Task>, Task<(TValue, string)>>> DequeueAsync(
             CancellationToken cancellationToken = default)
         {
             TaskCompletionSource<(TValue, Partition)> waiter;
@@ -165,12 +166,14 @@ namespace RabbitMqAsyncPublisher
             return await waiterTask.ConfigureAwait(false);
         }
 
-        private Func<Func<TValue, string, Task>, Task> CreateValueHandler(TValue value, Partition partition)
+        private Func<Func<TValue, string, Task>, Task<(TValue, string)>> CreateValueHandler(TValue value,
+            Partition partition)
         {
             return handle => HandleSafe(handle, value, partition);
         }
 
-        private async Task HandleSafe(Func<TValue, string, Task> handle, TValue value, Partition partition)
+        private async Task<(TValue, string)> HandleSafe(Func<TValue, string, Task> handle, TValue value,
+            Partition partition)
         {
             try
             {
@@ -196,6 +199,8 @@ namespace RabbitMqAsyncPublisher
                     EnqueuePartition(partition);
                 }
             }
+
+            return (value, partition.Name);
         }
 
         private Partition GetPartition(string partitionKey)
